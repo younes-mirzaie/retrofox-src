@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<!-- Video pipeline check with no download: records a canvas animation to WebM (VP8) with
+     MediaRecorder, plays it back, and reports decoded / dropped frames (also to the engine log). -->
+<html><head><meta name="viewport" content="width=device-width"><title>video check</title>
+<style>body{font:16px sans-serif;margin:12px} canvas,video{width:100%;max-width:320px;display:block;margin:6px 0;background:#000}
+button{font-size:18px;padding:10px;width:100%}</style></head>
+<body><h3>Retrofox video check</h3>
+<button id="go">record 4 s, then play it</button>
+<canvas id="c" width="320" height="180"></canvas><video id="v" controls></video>
+<div id="out"></div>
+<script>
+function log(t) { var d = document.createElement('div'); d.textContent = t; document.getElementById('out').appendChild(d);
+  if (window.dump) dump('video-check: ' + t + '\n'); }
+var c = document.getElementById('c'), g = c.getContext('2d'), t0 = performance.now();
+(function draw() {
+  var t = (performance.now() - t0) / 1000;
+  g.fillStyle = 'hsl(' + (t * 60 % 360) + ',60%,40%)'; g.fillRect(0, 0, 320, 180);
+  g.fillStyle = '#fff'; g.beginPath(); g.arc(160 + Math.sin(t * 2) * 120, 90, 24, 0, 7); g.fill();
+  g.font = '20px sans-serif'; g.fillText(t.toFixed(1) + ' s', 10, 30);
+  requestAnimationFrame(draw);
+})();
+document.getElementById('go').onclick = function () {
+  if (!c.captureStream || !window.MediaRecorder) { log('no captureStream/MediaRecorder'); return; }
+  var rec = new MediaRecorder(c.captureStream(30)), parts = [];
+  rec.ondataavailable = function (e) { parts.push(e.data); };
+  rec.onstop = function () {
+    var blob = new Blob(parts, { type: 'video/webm' }), v = document.getElementById('v');
+    log('recorded ' + blob.size + ' bytes, canPlayType webm/vp8: "' + v.canPlayType('video/webm; codecs="vp8"') + '"');
+    v.src = URL.createObjectURL(blob);
+    v.onplaying = function () { log('playing'); };
+    v.onerror = function () { log('video error ' + (v.error && v.error.code)); };
+    v.onended = function () {
+      var q = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality() : null;
+      log('ended: ' + (q ? q.totalVideoFrames + ' frames decoded, ' + q.droppedVideoFrames + ' dropped' :
+          'decoded ' + v.mozDecodedFrames + ', presented ' + v.mozPresentedFrames));
+    };
+    var p = v.play(); if (p && p.catch) p.catch(function (e) { log('play() failed: ' + e); });
+  };
+  rec.start(); log('recording...');
+  setTimeout(function () { rec.stop(); }, 4000);
+};
+</script></body></html>

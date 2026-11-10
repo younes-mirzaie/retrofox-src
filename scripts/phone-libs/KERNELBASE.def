@@ -1,0 +1,91 @@
+; Functions the phone's KERNELBASE.DLL exports that WindowsPhoneCore.lib doesn't expose.
+; Verified on the Lumia with phone\probe\probe.exe. Merged into build\lib\kernel32.lib.
+LIBRARY KERNELBASE.DLL
+EXPORTS
+    ; console / environment (static CRT)
+    FreeEnvironmentStringsA
+    FreeEnvironmentStringsW
+    GetCommandLineA
+    GetCommandLineW
+    GetConsoleCP
+    GetConsoleMode
+    GetConsoleOutputCP
+    ReadConsoleW
+    GetEnvironmentStrings
+    GetEnvironmentStringsW
+    GetStdHandle
+    SetConsoleCtrlHandler
+    SetEnvironmentVariableA
+    SetEnvironmentVariableW
+    SetStdHandle
+    WriteConsoleW
+    ; memory
+    VirtualAlloc
+    VirtualFree
+    VirtualProtect
+    MapViewOfFile
+    CreateFileMappingW
+    OpenFileMappingW
+    ; sync
+    CreateSemaphoreExW
+    OpenSemaphoreW
+    ; files / processes
+    AreFileApisANSI
+    GetVolumeInformationW
+    CreatePipe
+    GetCurrentDirectoryW
+    LocalFree
+    PeekNamedPipe
+    SetCurrentDirectoryW
+    K32GetProcessMemoryInfo
+    ; registry (advapi32 on the desktop)
+    RegCloseKey
+    RegEnumKeyExW
+    RegOpenKeyExW
+    RegQueryInfoKeyW
+    RegQueryValueExW
+    ; locale (ICU / Intl)
+    GetCurrencyFormatEx
+    GetNumberFormatEx
+    LCIDToLocaleName
+    ; security (advapi32 on the desktop)
+    AddAccessAllowedAce
+    AllocateAndInitializeSid
+    CopySid
+    FreeSid
+    GetLengthSid
+    GetTokenInformation
+    InitializeAcl
+    InitializeSecurityDescriptor
+    SetSecurityDescriptorDacl
+    SetSecurityDescriptorGroup
+    SetSecurityDescriptorOwner
+    GetEnvironmentVariableA
+    GetEnvironmentVariableW
+    ExpandEnvironmentStringsW
+    VerSetConditionMask
+    RegOpenKeyExA
+    GetTempFileNameW
+    AllocConsole
+    AttachConsole
+    ConnectNamedPipe
+    CreateNamedPipeW
+    CreateWellKnownSid
+    GlobalFree
+    IsWow64Process
+    K32GetMappedFileNameW
+    K32QueryWorkingSet
+    PathGetDriveNumberW
+    PathRemoveFileSpecW
+    RegCreateKeyExW
+    RegDeleteValueW
+    RegEnumValueW
+    RegNotifyChangeKeyValue
+    RegSetValueExW
+    SetNamedPipeHandleState
+    SHCreateDirectoryExW
+    SHGetFileInfoW
+    SHGetKnownFolderPath
+    SHGetSpecialFolderPathW
+    UnregisterWaitEx
+    VerQueryValueW

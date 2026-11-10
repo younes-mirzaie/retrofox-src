@@ -1,0 +1,30 @@
+; Functions the phone's WINMMBASE.DLL exports (the waveOut API; the phone has no WINMM.DLL).
+; Verified on the Lumia with phone\probe\probe.exe. Merged into build\lib\kernel32.lib.
+LIBRARY WINMMBASE.DLL
+EXPORTS
+    waveOutClose
+    waveOutGetDevCapsW
+    waveOutGetNumDevs
+    waveOutGetVolume
+    waveOutOpen
+    waveOutPrepareHeader
+    waveOutReset
+    waveOutSetVolume
+    waveOutUnprepareHeader
+    waveOutWrite
+    waveInGetDevCapsW
+    waveInGetNumDevs
+    waveInMessage
+    waveInOpen
+    waveInClose
+    waveInStart
+    waveInStop
+    waveInReset
+    waveInAddBuffer
+    waveInPrepareHeader
+    waveInUnprepareHeader
+    waveOutGetPosition
+    waveOutMessage
+    waveOutPause
+    waveOutRestart
+    waveOutGetErrorTextW

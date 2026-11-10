@@ -1,0 +1,8 @@
+; Functions only the phone's ADVAPI32LEGACY.DLL exports (verified with phone\probe\probe.exe).
+; Merged into build\lib\kernel32.lib.
+LIBRARY ADVAPI32LEGACY.DLL
+EXPORTS
+    ; RtlGenRandom (random seeds for the JS engine)
+    SystemFunction036
+    LookupAccountNameW
+    RegDeleteKeyW

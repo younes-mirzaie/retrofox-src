@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<!-- Sound output check for the engine (cubeb on the phone). Tap a button: you should hear a tone.
+     The results also go to the engine log through dump(). -->
+<html><head><meta name="viewport" content="width=device-width"><title>sound check</title>
+<style>body{font:16px sans-serif;margin:12px} button{font-size:18px;margin:6px 0;padding:10px;width:100%}</style></head>
+<body><h3>Retrofox sound check</h3>
+<button id="wav">play a WAV tone (audio element)</button>
+<button id="osc">play a WebAudio tone</button>
+<div id="out"></div>
+<script>
+function log(t) { var d = document.createElement('div'); d.textContent = t; document.getElementById('out').appendChild(d);
+  if (window.dump) dump('sound-check: ' + t + '\n'); }
+function wavBlob(freq, secs) {
+  var rate = 44100, n = rate * secs, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+  function str(o, s) { for (var i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); }
+  str(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); str(8, 'WAVEfmt '); v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true); str(36, 'data'); v.setUint32(40, n * 2, true);
+  for (var i = 0; i < n; i++) v.setInt16(44 + i * 2, Math.sin(2 * Math.PI * freq * i / rate) * 12000, true);
+  return new Blob([buf], { type: 'audio/wav' });
+}
+document.getElementById('wav').onclick = function () {
+  var a = new Audio(URL.createObjectURL(wavBlob(440, 1.5)));
+  a.onplaying = function () { log('audio element: playing'); };
+  a.onended = function () { log('audio element: ended (currentTime ' + a.currentTime.toFixed(2) + ')'); };
+  a.onerror = function () { log('audio element: error ' + (a.error && a.error.code)); };
+  var p = a.play(); if (p && p.catch) p.catch(function (e) { log('audio element: play() failed: ' + e); });
+};
+document.getElementById('osc').onclick = function () {
+  try {
+    var C = window.AudioContext || window.webkitAudioContext, c = new C(), o = c.createOscillator();
+    o.frequency.value = 660; o.connect(c.destination); o.start(); o.stop(c.currentTime + 1.5);
+    log('WebAudio: started at ' + c.sampleRate + ' Hz, state ' + c.state);
+    setTimeout(function () { log('WebAudio: currentTime after 1 s = ' + c.currentTime.toFixed(2) + ' (0 means no sound output)'); }, 1000);
+  } catch (e) { log('WebAudio: ' + e); }
+};
+</script></body></html>

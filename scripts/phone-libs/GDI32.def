@@ -1,0 +1,14 @@
+; The little of GDI the phone's GDI32.DLL has (regions, DCs, stock objects; no text or bitmap
+; drawing). Verified on the Lumia with phone\probe\probe.exe. Merged into build\lib\kernel32.lib.
+LIBRARY GDI32.DLL
+EXPORTS
+    CreateRectRgn
+    DeleteDC
+    DeleteObject
+    ExtCreateRegion
+    GetDeviceCaps
+    GetRegionData
+    GetStockObject
+    IntersectClipRect
+    SelectClipRgn
+    SelectObject

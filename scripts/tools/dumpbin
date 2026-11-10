@@ -1,0 +1,8 @@
+#!/bin/sh
+# Minimal "dumpbin -exports FILE" for builds without MSVC: one "ordinal hint RVA name" line per
+# export, as dumpbin prints them (toolkit/library/libxul.mk sorts these by RVA).
+[ "$1" = "-exports" ] || { echo "dumpbin stand-in: only -exports is supported" >&2; exit 1; }
+"/c/Program Files/LLVM/bin/llvm-readobj.exe" --coff-exports "$2" | awk '
+  /Ordinal:/ { ord = $2 }
+  /Name:/    { name = $2 }
+  /RVA:/     { printf "%8d %4X %08X %s\n", ord, ord - 1, strtonum($2), name }'

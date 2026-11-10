@@ -1,0 +1,5 @@
+; Functions the phone's SHLWAPI.DLL exports that WindowsPhoneCore.lib doesn't expose.
+; Verified on the Lumia with phone\probe\probe.exe. Merged into build\lib\kernel32.lib.
+LIBRARY SHLWAPI.DLL
+EXPORTS
+    AssocQueryStringW

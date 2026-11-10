@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<!-- translate / rotate / scale (CSS Transforms 2). Each green box should sit exactly on its grey
+     outline; a box off its outline means that case is wrong. The last row slides on tap
+     (transition: translate), like unespaints.com's pivot. -->
+<html><head><meta name="viewport" content="width=device-width"><title>individual transforms</title>
+<style>
+body { font: 14px sans-serif; margin: 10px; }
+.row { position: relative; height: 70px; margin-bottom: 8px; }
+.row span { position: absolute; left: 0; top: 0; font-size: 12px; }
+.target, .box { position: absolute; left: 10px; top: 18px; width: 40px; height: 40px; box-sizing: border-box; }
+.target { border: 2px dashed #888; }
+.box { background: #2a2; opacity: .9; }
+#t1 .box { translate: 100px; }                 #t1 .target { left: 110px; }
+#t2 .box { translate: 50% 10px; top: 8px; }    #t2 .target { left: 30px; top: 18px; }
+#t3 .box { translate: 60px; transform: translateX(40px); } #t3 .target { left: 110px; }
+#t4 .box { scale: 0.5; }                       #t4 .target { left: 20px; top: 28px; width: 20px; height: 20px; }
+#t5 .box { scale: 200% 50%; }                  #t5 .target { left: -10px; top: 28px; width: 80px; height: 20px; }
+#t6 .box { rotate: 45deg; }                    #t6 .target { transform: rotate(45deg); }
+#t7 .box { rotate: z 90deg; translate: 80px; } #t7 .target { left: 90px; }
+#t8 .box { translate: 100px; rotate: 90deg; scale: 0.5; } #t8 .target { left: 120px; top: 28px; width: 20px; height: 20px; }
+#t9 .box { transition: translate .4s ease; }   #t9.go .box { translate: 200px; }
+</style></head><body>
+<h3>translate / rotate / scale</h3>
+<div class="row" id="t1"><span>translate: 100px</span><div class="target"></div><div class="box"></div></div>
+<div class="row" id="t2"><span>translate: 50% 10px</span><div class="target"></div><div class="box"></div></div>
+<div class="row" id="t3"><span>translate + transform</span><div class="target"></div><div class="box"></div></div>
+<div class="row" id="t4"><span>scale: 0.5</span><div class="target"></div><div class="box"></div></div>
+<div class="row" id="t5"><span>scale: 200% 50%</span><div class="target"></div><div class="box"></div></div>
+<div class="row" id="t6"><span>rotate: 45deg</span><div class="target"></div><div class="box"></div></div>
+<div class="row" id="t7"><span>rotate: z 90deg + translate</span><div class="target"></div><div class="box"></div></div>
+<div class="row" id="t8"><span>translate, rotate, scale together</span><div class="target"></div><div class="box"></div></div>
+<div class="row" id="t9" onclick="this.classList.toggle('go')"><span>tap: transition: translate</span><div class="box"></div></div>
+<p id="support"></p>
+<script>
+var s = document.createElement('div').style;
+document.getElementById('support').textContent =
+  'style.translate ' + ('translate' in s) + ', rotate ' + ('rotate' in s) + ', scale ' + ('scale' in s) +
+  ', CSS.supports(translate: 1px) ' + (window.CSS && CSS.supports('translate', '1px'));
+</script>
+</body></html>

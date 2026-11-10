@@ -1,0 +1,5 @@
+; Functions the phone's SSPICLI.DLL exports that WindowsPhoneCore.lib doesn't expose.
+; Verified on the Lumia with phone\probe\probe.exe. Merged into build\lib\kernel32.lib.
+LIBRARY SSPICLI.DLL
+EXPORTS
+    GetUserNameExW

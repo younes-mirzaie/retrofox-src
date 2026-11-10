@@ -1,0 +1,8 @@
+; Functions the phone's CRYPTSP.DLL exports that WindowsPhoneCore.lib doesn't expose.
+; Verified on the Lumia with phone\probe\probe.exe. Merged into build\lib\kernel32.lib.
+LIBRARY CRYPTSP.DLL
+EXPORTS
+    CryptAcquireContextA
+    CryptAcquireContextW
+    CryptGenRandom
+    CryptReleaseContext

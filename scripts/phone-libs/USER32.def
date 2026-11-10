@@ -1,0 +1,8 @@
+; Functions the phone's USER32.DLL exports that WindowsPhoneCore.lib doesn't expose.
+; Verified on the Lumia with phone\probe\probe.exe. Merged into build\lib\kernel32.lib.
+LIBRARY USER32.DLL
+EXPORTS
+    GetDC
+    ReleaseDC
+    SystemParametersInfoA
+    SystemParametersInfoW

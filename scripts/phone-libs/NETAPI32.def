@@ -1,0 +1,7 @@
+; Functions the phone's NETAPI32.DLL exports that WindowsPhoneCore.lib doesn't expose.
+; Verified on the Lumia with phone\probe\probe.exe. Merged into build\lib\kernel32.lib.
+LIBRARY NETAPI32.DLL
+EXPORTS
+    NetApiBufferFree
+    NetUserGetInfo
+    NetWkstaGetInfo

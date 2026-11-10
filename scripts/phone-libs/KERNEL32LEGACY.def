@@ -1,0 +1,29 @@
+; Functions only the phone's KERNEL32LEGACY.DLL exports (verified with phone\probe\probe.exe).
+; Merged into build\lib\kernel32.lib.
+LIBRARY KERNEL32LEGACY.DLL
+EXPORTS
+    CreateFileMappingA
+    CreateSemaphoreW
+    GetComputerNameA
+    GetProcessAffinityMask
+    GetTempPathA
+    GlobalMemoryStatus
+    LoadLibraryA
+    LoadLibraryW
+    MoveFileA
+    MoveFileW
+    SetThreadAffinityMask
+    ; winmm on the desktop
+    timeBeginPeriod
+    timeEndPeriod
+    timeGetTime
+    SetDllDirectoryW
+    VerifyVersionInfoW
+    WaitForMultipleObjects
+    CopyFileW
+    GlobalLock
+    GlobalSize
+    GlobalUnlock
+    lstrcatW
+    RegisterWaitForSingleObject
+    SetThreadIdealProcessor

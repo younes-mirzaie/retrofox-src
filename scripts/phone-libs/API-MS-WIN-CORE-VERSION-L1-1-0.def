@@ -1,0 +1,6 @@
+; Functions the phone's API-MS-WIN-CORE-VERSION-L1-1-0.DLL exports that WindowsPhoneCore.lib doesn't expose.
+; Verified on the Lumia with phone\probe\probe.exe. Merged into build\lib\kernel32.lib.
+LIBRARY API-MS-WIN-CORE-VERSION-L1-1-0.DLL
+EXPORTS
+    GetFileVersionInfoExW
+    GetFileVersionInfoSizeExW

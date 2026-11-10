@@ -1,0 +1,183 @@
+diff --git a/widget/retrofox/RetrofoxFrame.h b/widget/retrofox/RetrofoxFrame.h
+index ee03860..5ba3ef5 100644
+--- a/widget/retrofox/RetrofoxFrame.h
++++ b/widget/retrofox/RetrofoxFrame.h
+@@ -36,6 +36,17 @@ bool PaintRetrofoxFrameNow();
+ // the innermost visible child window under the point (the page's content widget).
+ enum RetrofoxPointerAction { eRetrofoxPointerDown, eRetrofoxPointerMove, eRetrofoxPointerUp };
+ void DispatchRetrofoxPointer(RetrofoxPointerAction aAction, int32_t aX, int32_t aY);
++// Who handles the current touch drag. A touch goes to the page as touch events (down, moves, up);
++// once it has moved a little, it is the page's if the page cancelled the touch (preventDefault) or
++// CSS touch-action rules out panning that way, otherwise the browser scrolls (and a short touch
++// that hardly moved is a tap: a click follows it).
++enum RetrofoxGesture {
++  eRetrofoxGestureNone,       // no finger down
++  eRetrofoxGestureUndecided,  // down, not moved far enough yet
++  eRetrofoxGestureBrowser,    // the browser scrolls (DispatchRetrofoxScroll applies)
++  eRetrofoxGesturePage        // the page handles it (scrolling is ignored until the finger lifts)
++};
++RetrofoxGesture GetRetrofoxGesture();
+ // Scrolls by (aDX, aDY) device pixels at the last pointer position; positive aDY scrolls down.
+ void DispatchRetrofoxScroll(int32_t aDX, int32_t aDY);
+ // Moves that position without telling the page (where a pan starts, so it scrolls what is under
+diff --git a/widget/retrofox/nsWindow.cpp b/widget/retrofox/nsWindow.cpp
+index 987eeaa..909b788 100644
+--- a/widget/retrofox/nsWindow.cpp
++++ b/widget/retrofox/nsWindow.cpp
+@@ -19,6 +19,11 @@
+ #include "nsScreenManager.h"
+ #include "nsThreadUtils.h"
+ #include "RetrofoxFrame.h"
++#include "nsIFrame.h"
++#include "nsIPresShell.h"
++#include "nsLayoutUtils.h"
++#include "nsPresContext.h"
++#include "nsStyleConsts.h"
+ 
+ using namespace mozilla;
+ using namespace mozilla::gfx;
+@@ -425,6 +430,65 @@ PaintRetrofoxFrameNow()
+ 
+ static LayoutDeviceIntPoint sLastPointer(0, 0);
+ 
++// The touch in progress (see RetrofoxGesture in RetrofoxFrame.h)
++static RetrofoxGesture sGesture = eRetrofoxGestureNone;
++static LayoutDeviceIntPoint sTouchStart(0, 0);
++static bool sTouchStartPrevented = false;
++static bool sTouchMoved = false;
++static uint32_t sTouchAction = NS_STYLE_TOUCH_ACTION_AUTO;
++static const int32_t kTouchSlop = 12;   // device pixels before a touch is a drag
++
++RetrofoxGesture
++GetRetrofoxGesture()
++{
++  return sGesture;
++}
++
++// The touch-action that applies at a point: the element's and its ancestors' together (each can
++// only take away ways of panning)
++static uint32_t
++TouchActionAt(nsWindow* aTarget, const LayoutDeviceIntPoint& aPoint)
++{
++  nsIWidgetListener* listener = aTarget->GetWidgetListener();
++  nsIPresShell* presShell = listener ? listener->GetPresShell() : nullptr;
++  nsIFrame* root = presShell ? presShell->GetRootFrame() : nullptr;
++  if (!root) {
++    return NS_STYLE_TOUCH_ACTION_AUTO;
++  }
++  nsPresContext* pc = root->PresContext();
++  nsPoint pt(pc->DevPixelsToAppUnits(aPoint.x), pc->DevPixelsToAppUnits(aPoint.y));
++  nsIFrame* frame = nsLayoutUtils::GetFrameForPoint(root, pt);
++  bool panX = true, panY = true;
++  for (nsIFrame* f = frame; f; f = nsLayoutUtils::GetCrossDocParentFrame(f)) {
++    uint32_t ta = nsLayoutUtils::GetTouchActionFromFrame(f);
++    if (ta & NS_STYLE_TOUCH_ACTION_NONE) {
++      panX = panY = false;
++    } else if (!(ta & (NS_STYLE_TOUCH_ACTION_AUTO | NS_STYLE_TOUCH_ACTION_MANIPULATION))) {
++      panX = panX && (ta & NS_STYLE_TOUCH_ACTION_PAN_X);
++      panY = panY && (ta & NS_STYLE_TOUCH_ACTION_PAN_Y);
++    }
++  }
++  if (panX && panY) {
++    return NS_STYLE_TOUCH_ACTION_AUTO;
++  }
++  if (!panX && !panY) {
++    return NS_STYLE_TOUCH_ACTION_NONE;
++  }
++  return panX ? NS_STYLE_TOUCH_ACTION_PAN_X : NS_STYLE_TOUCH_ACTION_PAN_Y;
++}
++
++static nsEventStatus
++DispatchTouch(nsWindow* aTarget, EventMessage aMessage, const LayoutDeviceIntPoint& aPoint)
++{
++  WidgetTouchEvent touchEvent(true, aMessage, aTarget);
++  touchEvent.mTime = PR_IntervalNow();
++  touchEvent.mTouches.AppendElement(
++    new dom::Touch(0, aPoint, LayoutDeviceIntPoint(1, 1), 0.0f, 1.0f));
++  nsEventStatus status = nsEventStatus_eIgnore;
++  aTarget->DispatchEvent(&touchEvent, status);
++  return status;
++}
++
+ static nsWindow*
+ TargetAt(LayoutDeviceIntPoint& aPoint)
+ {
+@@ -435,30 +499,61 @@ TargetAt(LayoutDeviceIntPoint& aPoint)
+ void
+ DispatchRetrofoxPointer(RetrofoxPointerAction aAction, int32_t aX, int32_t aY)
+ {
+-  sLastPointer = LayoutDeviceIntPoint(aX, aY);
+   LayoutDeviceIntPoint pt(aX, aY);
+   RefPtr<nsWindow> target = TargetAt(pt);
+   if (!target) {
+     return;
+   }
+-  // The page sees a touchscreen (dom.w3c_touch_events), so it gets touch events first; mouse
+-  // events follow for pages that only listen to those
+-  EventMessage touch = aAction == eRetrofoxPointerDown ? eTouchStart :
+-                       aAction == eRetrofoxPointerUp ? eTouchEnd : eTouchMove;
+-  WidgetTouchEvent touchEvent(true, touch, target);
+-  touchEvent.mTime = PR_IntervalNow();
+-  touchEvent.mTouches.AppendElement(
+-    new dom::Touch(0, pt, LayoutDeviceIntPoint(1, 1), 0.0f, 1.0f));
+-  nsEventStatus touchStatus;
+-  target->DispatchEvent(&touchEvent, touchStatus);
+-
+-  // A tap is move + down + up, like widget/uikit
+-  EventMessage messages[2] = { eMouseMove, eVoidEvent };
++  // The page sees a touchscreen (dom.w3c_touch_events): touch events as the finger moves. A tap
++  // also gets mouse events (move, down, up: a click) for pages that only listen to those.
+   if (aAction == eRetrofoxPointerDown) {
+-    messages[1] = eMouseDown;
+-  } else if (aAction == eRetrofoxPointerUp) {
+-    messages[0] = eMouseUp;
++    // Scrolling during this touch goes to what is under the finger
++    sLastPointer = pt;
++    sTouchStart = pt;
++    sTouchMoved = false;
++    sTouchAction = TouchActionAt(target, pt);
++    sGesture = eRetrofoxGestureUndecided;
++    sTouchStartPrevented =
++      DispatchTouch(target, eTouchStart, pt) == nsEventStatus_eConsumeNoDefault;
++    return;
+   }
++  if (aAction == eRetrofoxPointerMove) {
++    if (sGesture == eRetrofoxGestureNone) {
++      return;
++    }
++    bool prevented = DispatchTouch(target, eTouchMove, pt) == nsEventStatus_eConsumeNoDefault;
++    int32_t dx = pt.x - sTouchStart.x, dy = pt.y - sTouchStart.y;
++    if (!sTouchMoved && dx * dx + dy * dy > kTouchSlop * kTouchSlop) {
++      sTouchMoved = true;
++    }
++    if (sGesture == eRetrofoxGestureUndecided && sTouchMoved) {
++      bool horizontal = (dx < 0 ? -dx : dx) > (dy < 0 ? -dy : dy);
++      bool pageOnly = sTouchStartPrevented || prevented ||
++                      sTouchAction == NS_STYLE_TOUCH_ACTION_NONE ||
++                      (horizontal && sTouchAction == NS_STYLE_TOUCH_ACTION_PAN_Y) ||
++                      (!horizontal && sTouchAction == NS_STYLE_TOUCH_ACTION_PAN_X);
++      sGesture = pageOnly ? eRetrofoxGesturePage : eRetrofoxGestureBrowser;
++    }
++    return;
++  }
++  // Up
++  bool tap = sGesture != eRetrofoxGestureNone && !sTouchMoved && !sTouchStartPrevented;
++  bool hadTouch = sGesture != eRetrofoxGestureNone;
++  sGesture = eRetrofoxGestureNone;
++  if (hadTouch) {
++    DispatchTouch(target, eTouchEnd, pt);
++  } else {
++    // An app that sends a tap as down + up at once: the touch, then the click
++    sTouchStartPrevented = DispatchTouch(target, eTouchStart, pt) == nsEventStatus_eConsumeNoDefault;
++    DispatchTouch(target, eTouchEnd, pt);
++    tap = !sTouchStartPrevented;
++  }
++  if (!tap) {
++    return;
++  }
++  sLastPointer = pt;
++  // A tap is move + down + up, like widget/uikit
++  EventMessage messages[3] = { eMouseMove, eMouseDown, eMouseUp };
+   for (EventMessage msg : messages) {
+     if (msg == eVoidEvent) {
+       continue;

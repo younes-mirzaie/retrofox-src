@@ -1,0 +1,19 @@
+# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+# The engine itself, built into libxul: it uses Gecko's internal API (the widget/retrofox
+# frame, preferences, internal strings), which xul.dll doesn't export to programs.
+# rfxengine.exe (..) calls RetrofoxEngineMain.
+
+SOURCES += [
+    'rfxengine.cpp',
+    'rfxview.cpp',
+]
+
+LOCAL_INCLUDES += [
+    '/widget/retrofox',
+]
+
+FINAL_LIBRARY = 'xul'

@@ -1,0 +1,7 @@
+; Functions the phone's NTMARTA.DLL exports that WindowsPhoneCore.lib doesn't expose.
+; Verified on the Lumia with phone\probe\probe.exe. Merged into build\lib\kernel32.lib.
+LIBRARY NTMARTA.DLL
+EXPORTS
+    GetNamedSecurityInfoW
+    SetEntriesInAclW
+    SetNamedSecurityInfoW

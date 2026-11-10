@@ -1,0 +1,28 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 14
+VisualStudioVersion = 14.0.25420.1
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Retrofox", "Retrofox\Retrofox.csproj", "{CAF23A95-ECB9-4409-98C3-A68EFD8B0F82}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|ARM = Debug|ARM
+		Release|ARM = Release|ARM
+		Debug|x86 = Debug|x86
+		Release|x86 = Release|x86
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{CAF23A95-ECB9-4409-98C3-A68EFD8B0F82}.Debug|ARM.ActiveCfg = Debug|ARM
+		{CAF23A95-ECB9-4409-98C3-A68EFD8B0F82}.Debug|ARM.Build.0 = Debug|ARM
+		{CAF23A95-ECB9-4409-98C3-A68EFD8B0F82}.Debug|ARM.Deploy.0 = Debug|ARM
+		{CAF23A95-ECB9-4409-98C3-A68EFD8B0F82}.Release|ARM.ActiveCfg = Release|ARM
+		{CAF23A95-ECB9-4409-98C3-A68EFD8B0F82}.Release|ARM.Build.0 = Release|ARM
+		{CAF23A95-ECB9-4409-98C3-A68EFD8B0F82}.Release|ARM.Deploy.0 = Release|ARM
+		{CAF23A95-ECB9-4409-98C3-A68EFD8B0F82}.Debug|x86.ActiveCfg = Debug|x86
+		{CAF23A95-ECB9-4409-98C3-A68EFD8B0F82}.Debug|x86.Build.0 = Debug|x86
+		{CAF23A95-ECB9-4409-98C3-A68EFD8B0F82}.Debug|x86.Deploy.0 = Debug|x86
+		{CAF23A95-ECB9-4409-98C3-A68EFD8B0F82}.Release|x86.ActiveCfg = Release|x86
+		{CAF23A95-ECB9-4409-98C3-A68EFD8B0F82}.Release|x86.Build.0 = Release|x86
+		{CAF23A95-ECB9-4409-98C3-A68EFD8B0F82}.Release|x86.Deploy.0 = Release|x86
+	EndGlobalSection
+EndGlobal

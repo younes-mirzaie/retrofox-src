@@ -1,0 +1,3530 @@
+diff --git a/accessible/ipc/win/moz.build b/accessible/ipc/win/moz.build
+index 4f0091efb..3989d1fb5 100644
+--- a/accessible/ipc/win/moz.build
++++ b/accessible/ipc/win/moz.build
+@@ -3,7 +3,8 @@
+ # License, v. 2.0. If a copy of the MPL was not distributed with this
+ # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ 
+-if CONFIG['COMPILE_ENVIRONMENT']:
++# The typelib needs MIDL and is only used by the accessibility code
++if CONFIG['COMPILE_ENVIRONMENT'] and CONFIG['ACCESSIBILITY']:
+     DIRS += ['typelib']
+ 
+ # With --disable-accessibility, we need to compile PDocAccessible.ipdl (which
+diff --git a/build/autoconf/icu.m4 b/build/autoconf/icu.m4
+index b807e9e95..cdd1a0f1b 100644
+--- a/build/autoconf/icu.m4
++++ b/build/autoconf/icu.m4
+@@ -50,7 +50,8 @@ AC_SUBST(MOZ_ICU_DATA_ARCHIVE)
+ AC_SUBST(MOZ_SHARED_ICU)
+ 
+ if test -n "$USE_ICU"; then
+-    if test -z "$YASM" -a -z "$GNU_AS" -a "$COMPILE_ENVIRONMENT"; then
++    dnl clang-cl embeds the data with icudata_incbin.c instead of an assembler
++    if test -z "$YASM" -a -z "$GNU_AS" -a -z "$CLANG_CL" -a "$COMPILE_ENVIRONMENT"; then
+       AC_MSG_ERROR([Building ICU requires either yasm or a GNU assembler. If you do not have either of those available for this platform you must use --without-intl-api])
+     fi
+     if test -z "$MOZ_SHARED_ICU"; then
+diff --git a/build/moz.configure/checks.configure b/build/moz.configure/checks.configure
+index d80c11e0f..c406460e4 100644
+--- a/build/moz.configure/checks.configure
++++ b/build/moz.configure/checks.configure
+@@ -51,7 +51,7 @@ def checking(what, callback=None):
+                 try:
+                     ret = func(*args, **kwargs)
+                 except FatalCheckError as e:
+-                    error = e.message
++                    error = str(e)
+                 display_ret = callback(ret) if callback else ret
+                 if display_ret is True:
+                     log.info('yes')
+diff --git a/build/moz.configure/toolchain.configure b/build/moz.configure/toolchain.configure
+index 810bde4c8..906ff00d5 100644
+--- a/build/moz.configure/toolchain.configure
++++ b/build/moz.configure/toolchain.configure
+@@ -391,7 +391,8 @@ def check_compiler(compiler, language, target):
+ 
+     # We force clang-cl to emulate Visual C++ 2015 Update 3 with fallback to
+     # cl.exe.
+-    if info.type == 'clang-cl' and info.version != '19.00.24213':
++    # (Unless the compiler already emulates a newer one; retrofox builds against the VS 2022 STL.)
++    if info.type == 'clang-cl' and info.version < '19.00.24213':
+         # Those flags are direct clang-cl flags that don't need -Xclang, add
+         # them directly.
+         flags.append('-fms-compatibility-version=19.00.24213')
+diff --git a/config/external/icu/data/icudata_incbin.c b/config/external/icu/data/icudata_incbin.c
+new file mode 100644
+index 000000000..3e148fa7c
+--- /dev/null
++++ b/config/external/icu/data/icudata_incbin.c
+@@ -0,0 +1,16 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++/* Embeds the ICU data file for clang-cl builds without yasm or a GNU assembler,
++ * using clang's integrated assembler (same idea as icudata_gas.S). */
++
++#define RFX_STR2(x) #x
++#define RFX_STR(x) RFX_STR2(x)
++
++__asm__(
++    ".section .rdata,\"dr\"\n"
++    ".globl " RFX_STR(ICU_DATA_SYMBOL) "\n"
++    ".balign 16\n"
++    RFX_STR(ICU_DATA_SYMBOL) ":\n"
++    ".incbin " RFX_STR(ICU_DATA_FILE) "\n");
+diff --git a/config/external/icu/data/moz.build b/config/external/icu/data/moz.build
+index 511dd2273..b3424299f 100644
+--- a/config/external/icu/data/moz.build
++++ b/config/external/icu/data/moz.build
+@@ -32,6 +32,11 @@ elif CONFIG['OS_ARCH'] == 'Darwin':
+         SOURCES += ['icudata_gas.S']
+ elif CONFIG['GNU_AS']:
+     SOURCES += ['icudata_gas.S']
++elif CONFIG['CLANG_CL']:
++    # No yasm/GNU as (e.g. Windows ARM cross builds): clang's integrated assembler via C
++    DEFINES['ICU_DATA_FILE'] = '"%s"' % data_file[CONFIG['TARGET_ENDIANNESS']]
++    DEFINES['ICU_DATA_SYMBOL'] = 'icudt%s_dat' % CONFIG['MOZ_ICU_VERSION']
++    SOURCES += ['icudata_incbin.c']
+ 
+ if CONFIG['MOZ_ICU_DATA_ARCHIVE']:
+     # Copy the pre-built ICU data file to dist/bin.
+diff --git a/config/external/nspr/pr/moz.build b/config/external/nspr/pr/moz.build
+index 6287f632c..604d3ab1f 100644
+--- a/config/external/nspr/pr/moz.build
++++ b/config/external/nspr/pr/moz.build
+@@ -82,6 +82,8 @@ elif CONFIG['OS_TARGET'] == 'WINNT':
+     )
+     if CONFIG['CPU_ARCH'] == 'x86_64':
+         DEFINES['_AMD64_'] = True
++    elif CONFIG['CPU_ARCH'] == 'arm':
++        DEFINES['_ARM_'] = True
+     else:
+         DEFINES['_X86_'] = True
+ else:
+diff --git a/config/moz.build b/config/moz.build
+index a2f4eeeed..a5e7c4bd3 100644
+--- a/config/moz.build
++++ b/config/moz.build
+@@ -29,7 +29,8 @@ if CONFIG['HOST_OS_ARCH'] != 'WINNT':
+     # while the program here is in C.
+     HostProgram('nsinstall_real', c_only=True)
+ 
+-if CONFIG['HOST_OS_ARCH'] == 'WINNT':
++# action_cl only wraps cl.exe for dependency tracking; cross builds run with CC_WRAPPER= instead
++if CONFIG['HOST_OS_ARCH'] == 'WINNT' and not CONFIG['CROSS_COMPILE']:
+     HOST_SOURCES +=[
+         'action_cl.cpp',
+     ]
+diff --git a/gfx/angle/moz.build b/gfx/angle/moz.build
+index f12eb6ca5..8ea888de1 100755
+--- a/gfx/angle/moz.build
++++ b/gfx/angle/moz.build
+@@ -158,8 +158,8 @@ DEFINES['GL_GLEXT_PROTOTYPES'] = ""
+ DEFINES['EGLAPI'] = ""
+ 
+ 
+-# Only build libEGL/libGLESv2 on Windows
+-if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'windows':
++# Only build libEGL/libGLESv2 on Windows (not Windows Phone: software rendering, no GL)
++if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'windows' and CONFIG['MOZ_ANGLE_RENDERER']:
+     DIRS += [ 'src/libANGLE', 'src/libGLESv2', 'src/libEGL' ]
+ 
+ DEFINES['ANGLE_ENABLE_HLSL'] = "1"
+diff --git a/gfx/gl/moz.build b/gfx/gl/moz.build
+index 14dcacdce..81dc7fda4 100644
+--- a/gfx/gl/moz.build
++++ b/gfx/gl/moz.build
+@@ -5,7 +5,8 @@
+ 
+ gl_provider = 'Null'
+ 
+-if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'windows':
++if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'windows' and not CONFIG['MOZ_WINDOWS_PHONE']:
++    # (Windows Phone renders in software: no GL at all)
+     gl_provider = 'WGL'
+ elif CONFIG['MOZ_WIDGET_TOOLKIT'] == 'cocoa':
+     gl_provider = 'CGL'
+@@ -68,7 +69,7 @@ if CONFIG['MOZ_X11']:
+     ]
+ 
+ # Win32 is a special snowflake, for ANGLE
+-if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'windows':
++if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'windows' and not CONFIG['MOZ_WINDOWS_PHONE']:
+     EXPORTS += [
+         'GLContextWGL.h',
+         'SharedSurfaceANGLE.h', # Needs <windows.h> for `HANDLE`.
+diff --git a/gfx/layers/ipc/CompositorBridgeChild.cpp b/gfx/layers/ipc/CompositorBridgeChild.cpp
+index ed5c3d52c..9f3eecce8 100644
+--- a/gfx/layers/ipc/CompositorBridgeChild.cpp
++++ b/gfx/layers/ipc/CompositorBridgeChild.cpp
+@@ -35,7 +35,7 @@
+ #include "mozilla/dom/ContentChild.h"
+ #include "mozilla/Unused.h"
+ #include "mozilla/DebugOnly.h"
+-#if defined(XP_WIN)
++#if defined(XP_WIN) && !defined(MOZ_WINDOWS_PHONE)
+ #include "WinUtils.h"
+ #endif
+ #include "mozilla/widget/CompositorWidget.h"
+@@ -464,7 +464,7 @@ CompositorBridgeChild::RecvUpdatePluginConfigurations(const LayoutDeviceIntPoint
+       // Handle invalidation, this can be costly, avoid if it is not needed.
+       if (isVisible) {
+         // invalidate region (widget origin)
+-#if defined(XP_WIN)
++#if defined(XP_WIN) && !defined(MOZ_WINDOWS_PHONE)
+         // Work around for flash's crummy sandbox. See bug 762948. This call
+         // digs down into the window hirearchy, invalidating regions on
+         // windows owned by other processes.
+diff --git a/gfx/skia/moz.build b/gfx/skia/moz.build
+index a41723b38..5f57f8944 100644
+--- a/gfx/skia/moz.build
++++ b/gfx/skia/moz.build
+@@ -684,7 +684,7 @@ if CONFIG['GKMEDIAS_SHARED_LIBRARY']:
+ 
+ # We should autogenerate these SSE related flags.
+ 
+-if CONFIG['_MSC_VER']:
++if CONFIG['_MSC_VER'] and CONFIG['INTEL_ARCHITECTURE']:
+     # MSVC doesn't need special compiler flags, but Skia needs to be told that these files should
+     # be built with the required SSE level or it will simply compile in stubs and cause runtime crashes
+     SOURCES['skia/src/opts/SkBitmapFilter_opts_SSE2.cpp'].flags += ['-DSK_CPU_SSE_LEVEL=20']
+diff --git a/ipc/chromium/src/base/atomicops.h b/ipc/chromium/src/base/atomicops.h
+index 66001578f..0a46a1cf4 100644
+--- a/ipc/chromium/src/base/atomicops.h
++++ b/ipc/chromium/src/base/atomicops.h
+@@ -133,7 +133,8 @@ Atomic64 Release_Load(volatile const Atomic64* ptr);
+ }  // namespace base
+ 
+ // Include our platform specific implementation.
+-#if defined(OS_WIN) && defined(ARCH_CPU_X86_FAMILY)
++#if defined(OS_WIN) && (defined(ARCH_CPU_X86_FAMILY) || defined(ARCH_CPU_ARM_FAMILY))
++// Only Interlocked* and MemoryBarrier(), which Windows on ARM has too
+ #include "base/atomicops_internals_x86_msvc.h"
+ #elif defined(OS_MACOSX) && (defined(ARCH_CPU_X86_FAMILY) || defined(ARCH_CPU_ARM64))
+ #include "base/atomicops_internals_x86_macosx.h"
+diff --git a/ipc/chromium/src/base/atomicops_internals_x86_msvc.h b/ipc/chromium/src/base/atomicops_internals_x86_msvc.h
+index 5b88501be..eba1e85b1 100644
+--- a/ipc/chromium/src/base/atomicops_internals_x86_msvc.h
++++ b/ipc/chromium/src/base/atomicops_internals_x86_msvc.h
+@@ -43,10 +43,18 @@ inline Atomic32 NoBarrier_AtomicIncrement(volatile Atomic32* ptr,
+   return Barrier_AtomicIncrement(ptr, increment);
+ }
+ 
++#if defined(_M_ARM)
++// On ARM, WinNT.h's MemoryBarrier is a macro (it would rename this function)
++#undef MemoryBarrier
++inline void MemoryBarrier() {
++  __dmb(_ARM_BARRIER_SY);
++}
++#else
+ inline void MemoryBarrier() {
+   // We use MemoryBarrier from WinNT.h
+   ::MemoryBarrier();
+ }
++#endif
+ 
+ inline Atomic32 Acquire_CompareAndSwap(volatile Atomic32* ptr,
+                                        Atomic32 old_value,
+diff --git a/ipc/ipdl/ipdl/parser.py b/ipc/ipdl/ipdl/parser.py
+index f90342ec1..59f3c7ea3 100644
+--- a/ipc/ipdl/ipdl/parser.py
++++ b/ipc/ipdl/ipdl/parser.py
+@@ -57,8 +57,11 @@ class Parser:
+     def parse(self, input, filename, includedirs, errout):
+         assert os.path.isabs(filename)
+ 
+-        if filename in Parser.parsed:
+-            return Parser.parsed[filename].tu
++        # The same file can arrive as C:\x and c:/x on Windows; parsing it twice gives two
++        # distinct protocol declarations that then fail manager/manages checks.
++        key = os.path.normcase(os.path.normpath(filename))
++        if key in Parser.parsed:
++            return Parser.parsed[key].tu
+ 
+         self.lexer = lex.lex(debug=self.debug,
+                              optimize=not self.debug,
+@@ -71,7 +74,7 @@ class Parser:
+         self.tu.filename = filename
+         self.errout = errout
+ 
+-        Parser.parsed[filename] = self
++        Parser.parsed[key] = self
+         Parser.parseStack.append(Parser.current)
+         Parser.current = self
+ 
+diff --git a/js/moz.configure b/js/moz.configure
+index f632edafe..96280c456 100644
+--- a/js/moz.configure
++++ b/js/moz.configure
+@@ -46,8 +46,9 @@ js_option('--disable-export-js', default=building_js,
+ 
+ @depends('--disable-shared-js', '--disable-export-js', target)
+ def shared_js(shared_js, export_js, target):
+-    # We want shared JS always be enabled on Windows regardless of the enable bool.
+-    if target.os == 'WINNT':
++    # We want shared JS always be enabled on Windows regardless of the enable bool,
++    # except for the standalone JS shell, whose shell/moz.build links static:js.
++    if target.os == 'WINNT' and shared_js.origin == 'default':
+         return True
+     if shared_js:
+         if not export_js:
+diff --git a/js/src/jit/ProcessExecutableMemory.cpp b/js/src/jit/ProcessExecutableMemory.cpp
+index 89f41488a..5538d3c70 100644
+--- a/js/src/jit/ProcessExecutableMemory.cpp
++++ b/js/src/jit/ProcessExecutableMemory.cpp
+@@ -53,7 +53,8 @@ ComputeRandomAllocationAddress()
+ # ifdef HAVE_64BIT_BUILD
+     static const uintptr_t base = 0x0000000080000000;
+     static const uintptr_t mask = 0x000003ffffff0000;
+-# elif defined(_M_IX86) || defined(__i386__)
++# elif defined(_M_IX86) || defined(__i386__) || defined(_M_ARM)
++    // 32-bit ARM Windows (Windows Phone) has the same 2 GiB user space as x86
+     static const uintptr_t base = 0x04000000;
+     static const uintptr_t mask = 0x3fff0000;
+ # else
+diff --git a/js/src/moz.build b/js/src/moz.build
+index 9e8d5f6cb..da1bbb13b 100644
+--- a/js/src/moz.build
++++ b/js/src/moz.build
+@@ -652,9 +652,11 @@ if CONFIG['JS_SHARED_LIBRARY']:
+     GeckoSharedLibrary('js', linkage=None)
+     SHARED_LIBRARY_NAME = CONFIG['JS_LIBRARY_NAME']
+     SDK_LIBRARY = True
+-    USE_LIBS += [
+-        'icu',
+-    ]
++    # Standalone JS builds don't run MOZ_CONFIG_ICU, so there may be no icu library
++    if CONFIG['USE_ICU']:
++        USE_LIBS += [
++            'icu',
++        ]
+ else:
+     Library('js')
+     FORCE_STATIC_LIB = True
+diff --git a/js/src/old-configure.in b/js/src/old-configure.in
+index 2b75a1fe8..7688f55e3 100644
+--- a/js/src/old-configure.in
++++ b/js/src/old-configure.in
+@@ -206,7 +206,8 @@ case "$target" in
+         # Check linker version
+         _LD_FULL_VERSION=`"${LD}" -v 2>&1 | sed -nre "$_MSVC_VER_FILTER"`
+         _LD_MAJOR_VERSION=`echo ${_LD_FULL_VERSION} | $AWK -F\. '{ print $1 }'`
+-        if test "$_LD_MAJOR_VERSION" != "$_CC_SUITE"; then
++        # lld-link (retrofox cross build) has no MSVC version banner
++        if test "$_LD_MAJOR_VERSION" != "$_CC_SUITE" && ! echo "${LD}" | grep -qi 'lld-link'; then
+             AC_MSG_ERROR([The linker major version, $_LD_FULL_VERSION,  does not match the compiler suite version, $_CC_SUITE.])
+         fi
+ 
+@@ -696,9 +697,12 @@ case "$target" in
+         WIN32_GUI_EXE_LDFLAGS=-mwindows
+     else
+         TARGET_COMPILER_ABI=msvc
+-        HOST_CC='$(CC)'
+-        HOST_CXX='$(CXX)'
+-        HOST_LD='$(LD)'
++        # Cross builds (retrofox: x64 host, phone ARM target) need a separate host compiler
++        if test -z "$CROSS_COMPILE"; then
++            HOST_CC='$(CC)'
++            HOST_CXX='$(CXX)'
++            HOST_LD='$(LD)'
++        fi
+         if test "$AS_BIN"; then
+             AS="$(basename "$AS_BIN")"
+         fi
+@@ -2265,6 +2269,13 @@ AC_SUBST(JS_CONFIG_LIBS)
+ # Avoid using obsolete NSPR features
+ AC_DEFINE(NO_NSPR_10_SUPPORT)
+ 
++dnl The JS engine includes ICU headers unconditionally, so standalone builds need ICU too
++dnl (the top-level old-configure.in does this for browser builds). Kept outside the
++dnl SKIP_COMPILER_CHECKS block, which python configure skips.
++if test -n "$JS_STANDALONE"; then
++    MOZ_CONFIG_ICU()
++fi
++
+ dnl Spit out some output
+ dnl ========================================================
+ MOZ_CREATE_CONFIG_STATUS()
+diff --git a/js/src/vm/Time.h b/js/src/vm/Time.h
+index 84ae07e25..10225d49d 100644
+--- a/js/src/vm/Time.h
++++ b/js/src/vm/Time.h
+@@ -124,7 +124,7 @@ PRMJ_FormatTime(char* buf, int buflen, const char* fmt, PRMJTime* tm);
+ 
+ #define MOZ_HAVE_RDTSC 1
+ 
+-#if defined(_WIN32)
++#if defined(_WIN32) && (defined(_M_IX86) || defined(_M_X64))
+ 
+ #include <intrin.h>
+ static __inline uint64_t
+diff --git a/js/src/vm/TraceLogging.cpp b/js/src/vm/TraceLogging.cpp
+index 72f9ccea5..5f62187ce 100644
+--- a/js/src/vm/TraceLogging.cpp
++++ b/js/src/vm/TraceLogging.cpp
+@@ -59,6 +59,19 @@ rdtsc(void)
+     return result;
+ 
+ }
++#elif defined(_WIN32)
++
++// Windows without RDTSC (ARM): the performance counter is the cheapest monotonic tick
++#include <windows.h>
++
++static __inline uint64_t
++rdtsc(void)
++{
++    LARGE_INTEGER now;
++    QueryPerformanceCounter(&now);
++    return uint64_t(now.QuadPart);
++}
++
+ #elif defined(__arm__)
+ 
+ #include <sys/time.h>
+diff --git a/media/libstagefright/ports/win32/include/netinet/in.h b/media/libstagefright/ports/win32/include/netinet/in.h
+index 90feff10a..b8855d323 100644
+--- a/media/libstagefright/ports/win32/include/netinet/in.h
++++ b/media/libstagefright/ports/win32/include/netinet/in.h
+@@ -6,7 +6,8 @@
+ 
+ #include <stdint.h>
+ 
+-#if defined(_M_IX86) || defined(_M_AMD64)
++/* All Windows targets are little-endian, ARM included */
++#if defined(_M_IX86) || defined(_M_AMD64) || defined(_M_ARM)
+ 
+ static uint32_t
+ ntohl(uint32_t x)
+diff --git a/media/libvpx/config/win/arm/vp8_rtcd.h b/media/libvpx/config/win/arm/vp8_rtcd.h
+new file mode 100644
+index 000000000..c68b01f24
+--- /dev/null
++++ b/media/libvpx/config/win/arm/vp8_rtcd.h
+@@ -0,0 +1,177 @@
++/*
++ *  Copyright (c) 2026 The WebM project authors. All Rights Reserved.
++ *
++ *  Use of this source code is governed by a BSD-style license
++ *  that can be found in the LICENSE file in the root of the source
++ *  tree. An additional intellectual property rights grant can be found
++ *  in the file PATENTS.  All contributing project authors may
++ *  be found in the AUTHORS file in the root of the source tree.
++ */
++
++// This file is generated. Do not edit.
++#ifndef VP8_RTCD_H_
++#define VP8_RTCD_H_
++
++#ifdef RTCD_C
++#define RTCD_EXTERN
++#else
++#define RTCD_EXTERN extern
++#endif
++
++/*
++ * VP8
++ */
++
++struct blockd;
++struct macroblockd;
++struct loop_filter_info;
++
++/* Encoder forward decls */
++struct block;
++struct macroblock;
++struct variance_vtable;
++union int_mv;
++struct yv12_buffer_config;
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++void vp8_bilinear_predict16x16_c(unsigned char *src_ptr, int src_pixels_per_line, int xoffset, int yoffset, unsigned char *dst_ptr, int dst_pitch);
++#define vp8_bilinear_predict16x16 vp8_bilinear_predict16x16_c
++
++void vp8_bilinear_predict4x4_c(unsigned char *src_ptr, int src_pixels_per_line, int xoffset, int yoffset, unsigned char *dst_ptr, int dst_pitch);
++#define vp8_bilinear_predict4x4 vp8_bilinear_predict4x4_c
++
++void vp8_bilinear_predict8x4_c(unsigned char *src_ptr, int src_pixels_per_line, int xoffset, int yoffset, unsigned char *dst_ptr, int dst_pitch);
++#define vp8_bilinear_predict8x4 vp8_bilinear_predict8x4_c
++
++void vp8_bilinear_predict8x8_c(unsigned char *src_ptr, int src_pixels_per_line, int xoffset, int yoffset, unsigned char *dst_ptr, int dst_pitch);
++#define vp8_bilinear_predict8x8 vp8_bilinear_predict8x8_c
++
++int vp8_block_error_c(short *coeff, short *dqcoeff);
++#define vp8_block_error vp8_block_error_c
++
++void vp8_copy32xn_c(const unsigned char *src_ptr, int src_stride, unsigned char *dst_ptr, int dst_stride, int height);
++#define vp8_copy32xn vp8_copy32xn_c
++
++void vp8_copy_mem16x16_c(unsigned char *src, int src_stride, unsigned char *dst, int dst_stride);
++#define vp8_copy_mem16x16 vp8_copy_mem16x16_c
++
++void vp8_copy_mem8x4_c(unsigned char *src, int src_stride, unsigned char *dst, int dst_stride);
++#define vp8_copy_mem8x4 vp8_copy_mem8x4_c
++
++void vp8_copy_mem8x8_c(unsigned char *src, int src_stride, unsigned char *dst, int dst_stride);
++#define vp8_copy_mem8x8 vp8_copy_mem8x8_c
++
++void vp8_dc_only_idct_add_c(short input_dc, unsigned char *pred_ptr, int pred_stride, unsigned char *dst_ptr, int dst_stride);
++#define vp8_dc_only_idct_add vp8_dc_only_idct_add_c
++
++int vp8_denoiser_filter_c(unsigned char *mc_running_avg_y, int mc_avg_y_stride, unsigned char *running_avg_y, int avg_y_stride, unsigned char *sig, int sig_stride, unsigned int motion_magnitude, int increase_denoising);
++#define vp8_denoiser_filter vp8_denoiser_filter_c
++
++int vp8_denoiser_filter_uv_c(unsigned char *mc_running_avg, int mc_avg_stride, unsigned char *running_avg, int avg_stride, unsigned char *sig, int sig_stride, unsigned int motion_magnitude, int increase_denoising);
++#define vp8_denoiser_filter_uv vp8_denoiser_filter_uv_c
++
++void vp8_dequant_idct_add_c(short *input, short *dq, unsigned char *dest, int stride);
++#define vp8_dequant_idct_add vp8_dequant_idct_add_c
++
++void vp8_dequant_idct_add_uv_block_c(short *q, short *dq, unsigned char *dst_u, unsigned char *dst_v, int stride, char *eobs);
++#define vp8_dequant_idct_add_uv_block vp8_dequant_idct_add_uv_block_c
++
++void vp8_dequant_idct_add_y_block_c(short *q, short *dq, unsigned char *dst, int stride, char *eobs);
++#define vp8_dequant_idct_add_y_block vp8_dequant_idct_add_y_block_c
++
++void vp8_dequantize_b_c(struct blockd*, short *DQC);
++#define vp8_dequantize_b vp8_dequantize_b_c
++
++int vp8_diamond_search_sad_c(struct macroblock *x, struct block *b, struct blockd *d, union int_mv *ref_mv, union int_mv *best_mv, int search_param, int sad_per_bit, int *num00, struct variance_vtable *fn_ptr, int *mvcost[2], union int_mv *center_mv);
++#define vp8_diamond_search_sad vp8_diamond_search_sad_c
++
++void vp8_fast_quantize_b_c(struct block *, struct blockd *);
++#define vp8_fast_quantize_b vp8_fast_quantize_b_c
++
++void vp8_loop_filter_bh_c(unsigned char *y_ptr, unsigned char *u_ptr, unsigned char *v_ptr, int y_stride, int uv_stride, struct loop_filter_info *lfi);
++#define vp8_loop_filter_bh vp8_loop_filter_bh_c
++
++void vp8_loop_filter_bv_c(unsigned char *y_ptr, unsigned char *u_ptr, unsigned char *v_ptr, int y_stride, int uv_stride, struct loop_filter_info *lfi);
++#define vp8_loop_filter_bv vp8_loop_filter_bv_c
++
++void vp8_loop_filter_mbh_c(unsigned char *y_ptr, unsigned char *u_ptr, unsigned char *v_ptr, int y_stride, int uv_stride, struct loop_filter_info *lfi);
++#define vp8_loop_filter_mbh vp8_loop_filter_mbh_c
++
++void vp8_loop_filter_mbv_c(unsigned char *y_ptr, unsigned char *u_ptr, unsigned char *v_ptr, int y_stride, int uv_stride, struct loop_filter_info *lfi);
++#define vp8_loop_filter_mbv vp8_loop_filter_mbv_c
++
++void vp8_loop_filter_bhs_c(unsigned char *y_ptr, int y_stride, const unsigned char *blimit);
++#define vp8_loop_filter_simple_bh vp8_loop_filter_bhs_c
++
++void vp8_loop_filter_bvs_c(unsigned char *y_ptr, int y_stride, const unsigned char *blimit);
++#define vp8_loop_filter_simple_bv vp8_loop_filter_bvs_c
++
++void vp8_loop_filter_simple_horizontal_edge_c(unsigned char *y_ptr, int y_stride, const unsigned char *blimit);
++#define vp8_loop_filter_simple_mbh vp8_loop_filter_simple_horizontal_edge_c
++
++void vp8_loop_filter_simple_vertical_edge_c(unsigned char *y_ptr, int y_stride, const unsigned char *blimit);
++#define vp8_loop_filter_simple_mbv vp8_loop_filter_simple_vertical_edge_c
++
++int vp8_mbblock_error_c(struct macroblock *mb, int dc);
++#define vp8_mbblock_error vp8_mbblock_error_c
++
++int vp8_mbuverror_c(struct macroblock *mb);
++#define vp8_mbuverror vp8_mbuverror_c
++
++int vp8_refining_search_sad_c(struct macroblock *x, struct block *b, struct blockd *d, union int_mv *ref_mv, int error_per_bit, int search_range, struct variance_vtable *fn_ptr, int *mvcost[2], union int_mv *center_mv);
++#define vp8_refining_search_sad vp8_refining_search_sad_c
++
++void vp8_regular_quantize_b_c(struct block *, struct blockd *);
++#define vp8_regular_quantize_b vp8_regular_quantize_b_c
++
++void vp8_short_fdct4x4_c(short *input, short *output, int pitch);
++#define vp8_short_fdct4x4 vp8_short_fdct4x4_c
++
++void vp8_short_fdct8x4_c(short *input, short *output, int pitch);
++#define vp8_short_fdct8x4 vp8_short_fdct8x4_c
++
++void vp8_short_idct4x4llm_c(short *input, unsigned char *pred_ptr, int pred_stride, unsigned char *dst_ptr, int dst_stride);
++#define vp8_short_idct4x4llm vp8_short_idct4x4llm_c
++
++void vp8_short_inv_walsh4x4_c(short *input, short *mb_dqcoeff);
++#define vp8_short_inv_walsh4x4 vp8_short_inv_walsh4x4_c
++
++void vp8_short_inv_walsh4x4_1_c(short *input, short *mb_dqcoeff);
++#define vp8_short_inv_walsh4x4_1 vp8_short_inv_walsh4x4_1_c
++
++void vp8_short_walsh4x4_c(short *input, short *output, int pitch);
++#define vp8_short_walsh4x4 vp8_short_walsh4x4_c
++
++void vp8_sixtap_predict16x16_c(unsigned char *src_ptr, int src_pixels_per_line, int xoffset, int yoffset, unsigned char *dst_ptr, int dst_pitch);
++#define vp8_sixtap_predict16x16 vp8_sixtap_predict16x16_c
++
++void vp8_sixtap_predict4x4_c(unsigned char *src_ptr, int src_pixels_per_line, int xoffset, int yoffset, unsigned char *dst_ptr, int dst_pitch);
++#define vp8_sixtap_predict4x4 vp8_sixtap_predict4x4_c
++
++void vp8_sixtap_predict8x4_c(unsigned char *src_ptr, int src_pixels_per_line, int xoffset, int yoffset, unsigned char *dst_ptr, int dst_pitch);
++#define vp8_sixtap_predict8x4 vp8_sixtap_predict8x4_c
++
++void vp8_sixtap_predict8x8_c(unsigned char *src_ptr, int src_pixels_per_line, int xoffset, int yoffset, unsigned char *dst_ptr, int dst_pitch);
++#define vp8_sixtap_predict8x8 vp8_sixtap_predict8x8_c
++
++void vp8_temporal_filter_apply_c(unsigned char *frame1, unsigned int stride, unsigned char *frame2, unsigned int block_size, int strength, int filter_weight, unsigned int *accumulator, unsigned short *count);
++#define vp8_temporal_filter_apply vp8_temporal_filter_apply_c
++
++void vp8_rtcd(void);
++
++#include "vpx_config.h"
++
++#ifdef RTCD_C
++static void setup_rtcd_internal(void)
++{
++}
++#endif
++
++#ifdef __cplusplus
++}  // extern "C"
++#endif
++
++#endif  // VP8_RTCD_H_
+diff --git a/media/libvpx/config/win/arm/vp9_rtcd.h b/media/libvpx/config/win/arm/vp9_rtcd.h
+new file mode 100644
+index 000000000..c914437a7
+--- /dev/null
++++ b/media/libvpx/config/win/arm/vp9_rtcd.h
+@@ -0,0 +1,114 @@
++/*
++ *  Copyright (c) 2026 The WebM project authors. All Rights Reserved.
++ *
++ *  Use of this source code is governed by a BSD-style license
++ *  that can be found in the LICENSE file in the root of the source
++ *  tree. An additional intellectual property rights grant can be found
++ *  in the file PATENTS.  All contributing project authors may
++ *  be found in the AUTHORS file in the root of the source tree.
++ */
++
++// This file is generated. Do not edit.
++#ifndef VP9_RTCD_H_
++#define VP9_RTCD_H_
++
++#ifdef RTCD_C
++#define RTCD_EXTERN
++#else
++#define RTCD_EXTERN extern
++#endif
++
++/*
++ * VP9
++ */
++
++#include "vpx/vpx_integer.h"
++#include "vp9/common/vp9_common.h"
++#include "vp9/common/vp9_enums.h"
++#include "vp9/common/vp9_filter.h"
++#if !CONFIG_REALTIME_ONLY && CONFIG_VP9_ENCODER
++#include "vp9/encoder/vp9_temporal_filter.h"
++#endif
++
++struct macroblockd;
++
++/* Encoder forward decls */
++struct macroblock;
++struct macroblock_plane;
++struct vp9_sad_table;
++struct ScanOrder;
++struct search_site_config;
++struct mv;
++union int_mv;
++struct yv12_buffer_config;
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++void vp9_apply_temporal_filter_c(const uint8_t *y_src, int y_src_stride, const uint8_t *y_pre, int y_pre_stride, const uint8_t *u_src, const uint8_t *v_src, int uv_src_stride, const uint8_t *u_pre, const uint8_t *v_pre, int uv_pre_stride, unsigned int block_width, unsigned int block_height, int ss_x, int ss_y, int strength, const int *const blk_fw, int use_32x32, uint32_t *y_accumulator, uint16_t *y_count, uint32_t *u_accumulator, uint16_t *u_count, uint32_t *v_accumulator, uint16_t *v_count);
++#define vp9_apply_temporal_filter vp9_apply_temporal_filter_c
++
++int64_t vp9_block_error_c(const tran_low_t *coeff, const tran_low_t *dqcoeff, intptr_t block_size, int64_t *ssz);
++#define vp9_block_error vp9_block_error_c
++
++int64_t vp9_block_error_fp_c(const tran_low_t *coeff, const tran_low_t *dqcoeff, int block_size);
++#define vp9_block_error_fp vp9_block_error_fp_c
++
++int vp9_diamond_search_sad_c(const struct macroblock *x, const struct search_site_config *cfg,  struct mv *ref_mv, uint32_t start_mv_sad, struct mv *best_mv, int search_param, int sad_per_bit, int *num00, const struct vp9_sad_table *sad_fn_ptr, const struct mv *center_mv);
++#define vp9_diamond_search_sad vp9_diamond_search_sad_c
++
++void vp9_fht16x16_c(const int16_t *input, tran_low_t *output, int stride, int tx_type);
++#define vp9_fht16x16 vp9_fht16x16_c
++
++void vp9_fht4x4_c(const int16_t *input, tran_low_t *output, int stride, int tx_type);
++#define vp9_fht4x4 vp9_fht4x4_c
++
++void vp9_fht8x8_c(const int16_t *input, tran_low_t *output, int stride, int tx_type);
++#define vp9_fht8x8 vp9_fht8x8_c
++
++void vp9_fwht4x4_c(const int16_t *input, tran_low_t *output, int stride);
++#define vp9_fwht4x4 vp9_fwht4x4_c
++
++void vp9_iht16x16_256_add_c(const tran_low_t *input, uint8_t *dest, int stride, int tx_type);
++#define vp9_iht16x16_256_add vp9_iht16x16_256_add_c
++
++void vp9_iht4x4_16_add_c(const tran_low_t *input, uint8_t *dest, int stride, int tx_type);
++#define vp9_iht4x4_16_add vp9_iht4x4_16_add_c
++
++void vp9_iht8x8_64_add_c(const tran_low_t *input, uint8_t *dest, int stride, int tx_type);
++#define vp9_iht8x8_64_add vp9_iht8x8_64_add_c
++
++void vp9_quantize_fp_c(const tran_low_t *coeff_ptr, intptr_t n_coeffs, const struct macroblock_plane *const mb_plane, tran_low_t *qcoeff_ptr, tran_low_t *dqcoeff_ptr, const int16_t *dequant_ptr, uint16_t *eob_ptr, const struct ScanOrder *const scan_order);
++#define vp9_quantize_fp vp9_quantize_fp_c
++
++void vp9_quantize_fp_32x32_c(const tran_low_t *coeff_ptr, intptr_t n_coeffs, const struct macroblock_plane *const mb_plane, tran_low_t *qcoeff_ptr, tran_low_t *dqcoeff_ptr, const int16_t *dequant_ptr, uint16_t *eob_ptr, const struct ScanOrder *const scan_order);
++#define vp9_quantize_fp_32x32 vp9_quantize_fp_32x32_c
++
++void vp9_scale_and_extend_frame_c(const struct yv12_buffer_config *src, struct yv12_buffer_config *dst, INTERP_FILTER filter_type, int phase_scaler);
++#define vp9_scale_and_extend_frame vp9_scale_and_extend_frame_c
++
++void vpx_convolve12_c(const uint8_t *src, ptrdiff_t src_stride, uint8_t *dst, ptrdiff_t dst_stride, const InterpKernel12 *filter, int x0_q4, int x_step_q4, int y0_q4, int y_step_q4, int w, int h);
++#define vpx_convolve12 vpx_convolve12_c
++
++void vpx_convolve12_horiz_c(const uint8_t *src, ptrdiff_t src_stride, uint8_t *dst, ptrdiff_t dst_stride, const InterpKernel12 *filter, int x0_q4, int x_step_q4, int y0_q4, int y_step_q4, int w, int h);
++#define vpx_convolve12_horiz vpx_convolve12_horiz_c
++
++void vpx_convolve12_vert_c(const uint8_t *src, ptrdiff_t src_stride, uint8_t *dst, ptrdiff_t dst_stride, const InterpKernel12 *filter, int x0_q4, int x_step_q4, int y0_q4, int y_step_q4, int w, int h);
++#define vpx_convolve12_vert vpx_convolve12_vert_c
++
++void vp9_rtcd(void);
++
++#include "vpx_config.h"
++
++#ifdef RTCD_C
++static void setup_rtcd_internal(void)
++{
++}
++#endif
++
++#ifdef __cplusplus
++}  // extern "C"
++#endif
++
++#endif  // VP9_RTCD_H_
+diff --git a/media/libvpx/config/win/arm/vpx_config.asm b/media/libvpx/config/win/arm/vpx_config.asm
+new file mode 100644
+index 000000000..cabc9f0a0
+--- /dev/null
++++ b/media/libvpx/config/win/arm/vpx_config.asm
+@@ -0,0 +1,97 @@
++@ This file was created from a .asm file
++@  using the ads2gas.pl script.
++.syntax unified
++.equ VPX_ARCH_ARM ,  0
++.equ VPX_ARCH_AARCH64 ,  0
++.equ VPX_ARCH_MIPS ,  0
++.equ VPX_ARCH_X86 ,  0
++.equ VPX_ARCH_X86_64 ,  0
++.equ VPX_ARCH_PPC ,  0
++.equ VPX_ARCH_LOONGARCH ,  0
++.equ HAVE_NEON_ASM ,  0
++.equ HAVE_NEON ,  0
++.equ HAVE_NEON_DOTPROD ,  0
++.equ HAVE_NEON_I8MM ,  0
++.equ HAVE_SVE ,  0
++.equ HAVE_SVE2 ,  0
++.equ HAVE_MIPS32 ,  0
++.equ HAVE_DSPR2 ,  0
++.equ HAVE_MSA ,  0
++.equ HAVE_MIPS64 ,  0
++.equ HAVE_MMX ,  0
++.equ HAVE_SSE ,  0
++.equ HAVE_SSE2 ,  0
++.equ HAVE_SSE3 ,  0
++.equ HAVE_SSSE3 ,  0
++.equ HAVE_SSE4_1 ,  0
++.equ HAVE_AVX ,  0
++.equ HAVE_AVX2 ,  0
++.equ HAVE_AVX512 ,  0
++.equ HAVE_VSX ,  0
++.equ HAVE_MMI ,  0
++.equ HAVE_LSX ,  0
++.equ HAVE_LASX ,  0
++.equ HAVE_VPX_PORTS ,  1
++.equ HAVE_PTHREAD_H ,  1
++.equ CONFIG_DEPENDENCY_TRACKING ,  1
++.equ CONFIG_EXTERNAL_BUILD ,  1
++.equ CONFIG_INSTALL_DOCS ,  0
++.equ CONFIG_INSTALL_BINS ,  1
++.equ CONFIG_INSTALL_LIBS ,  1
++.equ CONFIG_INSTALL_SRCS ,  0
++.equ CONFIG_DEBUG ,  0
++.equ CONFIG_GPROF ,  0
++.equ CONFIG_GCOV ,  0
++.equ CONFIG_RVCT ,  0
++.equ CONFIG_GCC ,  1
++.equ CONFIG_MSVS ,  0
++.equ CONFIG_PIC ,  1
++.equ CONFIG_BIG_ENDIAN ,  0
++.equ CONFIG_CODEC_SRCS ,  0
++.equ CONFIG_DEBUG_LIBS ,  0
++.equ CONFIG_DEQUANT_TOKENS ,  0
++.equ CONFIG_DC_RECON ,  0
++.equ CONFIG_RUNTIME_CPU_DETECT ,  0
++.equ CONFIG_POSTPROC ,  0
++.equ CONFIG_VP9_POSTPROC ,  0
++.equ CONFIG_MULTITHREAD ,  1
++.equ CONFIG_INTERNAL_STATS ,  0
++.equ CONFIG_VP8_ENCODER ,  1
++.equ CONFIG_VP8_DECODER ,  1
++.equ CONFIG_VP9_ENCODER ,  1
++.equ CONFIG_VP9_DECODER ,  1
++.equ CONFIG_VP8 ,  1
++.equ CONFIG_VP9 ,  1
++.equ CONFIG_ENCODERS ,  1
++.equ CONFIG_DECODERS ,  1
++.equ CONFIG_STATIC_MSVCRT ,  0
++.equ CONFIG_SPATIAL_RESAMPLING ,  1
++.equ CONFIG_REALTIME_ONLY ,  0
++.equ CONFIG_ONTHEFLY_BITPACKING ,  0
++.equ CONFIG_ERROR_CONCEALMENT ,  0
++.equ CONFIG_SHARED ,  0
++.equ CONFIG_STATIC ,  1
++.equ CONFIG_SMALL ,  0
++.equ CONFIG_POSTPROC_VISUALIZER ,  0
++.equ CONFIG_OS_SUPPORT ,  1
++.equ CONFIG_UNIT_TESTS ,  0
++.equ CONFIG_WEBM_IO ,  1
++.equ CONFIG_LIBYUV ,  1
++.equ CONFIG_DECODE_PERF_TESTS ,  0
++.equ CONFIG_ENCODE_PERF_TESTS ,  0
++.equ CONFIG_MULTI_RES_ENCODING ,  1
++.equ CONFIG_TEMPORAL_DENOISING ,  1
++.equ CONFIG_VP9_TEMPORAL_DENOISING ,  0
++.equ CONFIG_COEFFICIENT_RANGE_CHECKING ,  0
++.equ CONFIG_VP9_HIGHBITDEPTH ,  0
++.equ CONFIG_BETTER_HW_COMPATIBILITY ,  0
++.equ CONFIG_EXPERIMENTAL ,  0
++.equ CONFIG_SIZE_LIMIT ,  1
++.equ CONFIG_ALWAYS_ADJUST_BPM ,  0
++.equ CONFIG_BITSTREAM_DEBUG ,  0
++.equ CONFIG_MISMATCH_DEBUG ,  0
++.equ CONFIG_FP_MB_STATS ,  0
++.equ CONFIG_EMULATE_HARDWARE ,  0
++.equ CONFIG_NON_GREEDY_MV ,  0
++.equ CONFIG_COLLECT_COMPONENT_TIMING ,  0
++    .section .note.GNU-stack,"",%progbits
+diff --git a/media/libvpx/config/win/arm/vpx_config.c b/media/libvpx/config/win/arm/vpx_config.c
+new file mode 100644
+index 000000000..5a0656416
+--- /dev/null
++++ b/media/libvpx/config/win/arm/vpx_config.c
+@@ -0,0 +1,10 @@
++/* Copyright (c) 2011 The WebM project authors. All Rights Reserved. */
++/*  */
++/* Use of this source code is governed by a BSD-style license */
++/* that can be found in the LICENSE file in the root of the source */
++/* tree. An additional intellectual property rights grant can be found */
++/* in the file PATENTS.  All contributing project authors may */
++/* be found in the AUTHORS file in the root of the source tree. */
++#include "vpx/vpx_codec.h"
++static const char* const cfg = "--target=generic-gnu --enable-external-build --disable-examples --disable-install-docs --disable-unit-tests --enable-multi-res-encoding --size-limit=8192x4608 --enable-pic";
++const char *vpx_codec_build_config(void) {return cfg;}
+diff --git a/media/libvpx/config/win/arm/vpx_config.h b/media/libvpx/config/win/arm/vpx_config.h
+new file mode 100644
+index 000000000..699cbc580
+--- /dev/null
++++ b/media/libvpx/config/win/arm/vpx_config.h
+@@ -0,0 +1,108 @@
++/* Copyright (c) 2011 The WebM project authors. All Rights Reserved. */
++/*  */
++/* Use of this source code is governed by a BSD-style license */
++/* that can be found in the LICENSE file in the root of the source */
++/* tree. An additional intellectual property rights grant can be found */
++/* in the file PATENTS.  All contributing project authors may */
++/* be found in the AUTHORS file in the root of the source tree. */
++/* This file automatically generated by configure. Do not edit! */
++#ifndef VPX_CONFIG_H
++#define VPX_CONFIG_H
++#define RESTRICT    
++#define INLINE      inline
++#define VPX_ARCH_ARM 0
++#define VPX_ARCH_AARCH64 0
++#define VPX_ARCH_MIPS 0
++#define VPX_ARCH_X86 0
++#define VPX_ARCH_X86_64 0
++#define VPX_ARCH_PPC 0
++#define VPX_ARCH_LOONGARCH 0
++#define HAVE_NEON_ASM 0
++#define HAVE_NEON 0
++#define HAVE_NEON_DOTPROD 0
++#define HAVE_NEON_I8MM 0
++#define HAVE_SVE 0
++#define HAVE_SVE2 0
++#define HAVE_MIPS32 0
++#define HAVE_DSPR2 0
++#define HAVE_MSA 0
++#define HAVE_MIPS64 0
++#define HAVE_MMX 0
++#define HAVE_SSE 0
++#define HAVE_SSE2 0
++#define HAVE_SSE3 0
++#define HAVE_SSSE3 0
++#define HAVE_SSE4_1 0
++#define HAVE_AVX 0
++#define HAVE_AVX2 0
++#define HAVE_AVX512 0
++#define HAVE_VSX 0
++#define HAVE_MMI 0
++#define HAVE_LSX 0
++#define HAVE_LASX 0
++#define HAVE_VPX_PORTS 1
++#define HAVE_PTHREAD_H 0
++#define CONFIG_DEPENDENCY_TRACKING 1
++#define CONFIG_EXTERNAL_BUILD 1
++#define CONFIG_INSTALL_DOCS 0
++#define CONFIG_INSTALL_BINS 1
++#define CONFIG_INSTALL_LIBS 1
++#define CONFIG_INSTALL_SRCS 0
++#define CONFIG_DEBUG 0
++#define CONFIG_GPROF 0
++#define CONFIG_GCOV 0
++#define CONFIG_RVCT 0
++#define CONFIG_GCC 1
++#define CONFIG_MSVS 0
++#define CONFIG_PIC 1
++#define CONFIG_BIG_ENDIAN 0
++#define CONFIG_CODEC_SRCS 0
++#define CONFIG_DEBUG_LIBS 0
++#define CONFIG_DEQUANT_TOKENS 0
++#define CONFIG_DC_RECON 0
++#define CONFIG_RUNTIME_CPU_DETECT 0
++#define CONFIG_POSTPROC 0
++#define CONFIG_VP9_POSTPROC 0
++#define CONFIG_MULTITHREAD 1
++#define CONFIG_INTERNAL_STATS 0
++#define CONFIG_VP8_ENCODER 1
++#define CONFIG_VP8_DECODER 1
++#define CONFIG_VP9_ENCODER 1
++#define CONFIG_VP9_DECODER 1
++#define CONFIG_VP8 1
++#define CONFIG_VP9 1
++#define CONFIG_ENCODERS 1
++#define CONFIG_DECODERS 1
++#define CONFIG_STATIC_MSVCRT 0
++#define CONFIG_SPATIAL_RESAMPLING 1
++#define CONFIG_REALTIME_ONLY 0
++#define CONFIG_ONTHEFLY_BITPACKING 0
++#define CONFIG_ERROR_CONCEALMENT 0
++#define CONFIG_SHARED 0
++#define CONFIG_STATIC 1
++#define CONFIG_SMALL 0
++#define CONFIG_POSTPROC_VISUALIZER 0
++#define CONFIG_OS_SUPPORT 1
++#define CONFIG_UNIT_TESTS 0
++#define CONFIG_WEBM_IO 1
++#define CONFIG_LIBYUV 1
++#define CONFIG_DECODE_PERF_TESTS 0
++#define CONFIG_ENCODE_PERF_TESTS 0
++#define CONFIG_MULTI_RES_ENCODING 1
++#define CONFIG_TEMPORAL_DENOISING 1
++#define CONFIG_VP9_TEMPORAL_DENOISING 0
++#define CONFIG_COEFFICIENT_RANGE_CHECKING 0
++#define CONFIG_VP9_HIGHBITDEPTH 0
++#define CONFIG_BETTER_HW_COMPATIBILITY 0
++#define CONFIG_EXPERIMENTAL 0
++#define CONFIG_SIZE_LIMIT 1
++#define CONFIG_ALWAYS_ADJUST_BPM 0
++#define CONFIG_BITSTREAM_DEBUG 0
++#define CONFIG_MISMATCH_DEBUG 0
++#define CONFIG_FP_MB_STATS 0
++#define CONFIG_EMULATE_HARDWARE 0
++#define CONFIG_NON_GREEDY_MV 0
++#define CONFIG_COLLECT_COMPONENT_TIMING 0
++#define DECODE_WIDTH_LIMIT 8192
++#define DECODE_HEIGHT_LIMIT 4608
++#endif /* VPX_CONFIG_H */
+diff --git a/media/libvpx/config/win/arm/vpx_dsp_rtcd.h b/media/libvpx/config/win/arm/vpx_dsp_rtcd.h
+new file mode 100644
+index 000000000..ea44ef01c
+--- /dev/null
++++ b/media/libvpx/config/win/arm/vpx_dsp_rtcd.h
+@@ -0,0 +1,754 @@
++/*
++ *  Copyright (c) 2026 The WebM project authors. All Rights Reserved.
++ *
++ *  Use of this source code is governed by a BSD-style license
++ *  that can be found in the LICENSE file in the root of the source
++ *  tree. An additional intellectual property rights grant can be found
++ *  in the file PATENTS.  All contributing project authors may
++ *  be found in the AUTHORS file in the root of the source tree.
++ */
++
++// This file is generated. Do not edit.
++#ifndef VPX_DSP_RTCD_H_
++#define VPX_DSP_RTCD_H_
++
++#ifdef RTCD_C
++#define RTCD_EXTERN
++#else
++#define RTCD_EXTERN extern
++#endif
++
++/*
++ * DSP
++ */
++
++#include "vpx/vpx_integer.h"
++#include "vpx_dsp/vpx_dsp_common.h"
++#include "vpx_dsp/vpx_filter.h"
++#if CONFIG_VP9_ENCODER
++ struct macroblock_plane;
++ struct ScanOrder;
++#endif
++
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++unsigned int vpx_avg_4x4_c(const uint8_t *, int p);
++#define vpx_avg_4x4 vpx_avg_4x4_c
++
++unsigned int vpx_avg_8x8_c(const uint8_t *, int p);
++#define vpx_avg_8x8 vpx_avg_8x8_c
++
++void vpx_comp_avg_pred_c(uint8_t *comp_pred, const uint8_t *pred, int width, int height, const uint8_t *ref, int ref_stride);
++#define vpx_comp_avg_pred vpx_comp_avg_pred_c
++
++void vpx_convolve8_c(const uint8_t *src, ptrdiff_t src_stride, uint8_t *dst, ptrdiff_t dst_stride, const InterpKernel *filter, int x0_q4, int x_step_q4, int y0_q4, int y_step_q4, int w, int h);
++#define vpx_convolve8 vpx_convolve8_c
++
++void vpx_convolve8_avg_c(const uint8_t *src, ptrdiff_t src_stride, uint8_t *dst, ptrdiff_t dst_stride, const InterpKernel *filter, int x0_q4, int x_step_q4, int y0_q4, int y_step_q4, int w, int h);
++#define vpx_convolve8_avg vpx_convolve8_avg_c
++
++void vpx_convolve8_avg_horiz_c(const uint8_t *src, ptrdiff_t src_stride, uint8_t *dst, ptrdiff_t dst_stride, const InterpKernel *filter, int x0_q4, int x_step_q4, int y0_q4, int y_step_q4, int w, int h);
++#define vpx_convolve8_avg_horiz vpx_convolve8_avg_horiz_c
++
++void vpx_convolve8_avg_vert_c(const uint8_t *src, ptrdiff_t src_stride, uint8_t *dst, ptrdiff_t dst_stride, const InterpKernel *filter, int x0_q4, int x_step_q4, int y0_q4, int y_step_q4, int w, int h);
++#define vpx_convolve8_avg_vert vpx_convolve8_avg_vert_c
++
++void vpx_convolve8_horiz_c(const uint8_t *src, ptrdiff_t src_stride, uint8_t *dst, ptrdiff_t dst_stride, const InterpKernel *filter, int x0_q4, int x_step_q4, int y0_q4, int y_step_q4, int w, int h);
++#define vpx_convolve8_horiz vpx_convolve8_horiz_c
++
++void vpx_convolve8_vert_c(const uint8_t *src, ptrdiff_t src_stride, uint8_t *dst, ptrdiff_t dst_stride, const InterpKernel *filter, int x0_q4, int x_step_q4, int y0_q4, int y_step_q4, int w, int h);
++#define vpx_convolve8_vert vpx_convolve8_vert_c
++
++void vpx_convolve_avg_c(const uint8_t *src, ptrdiff_t src_stride, uint8_t *dst, ptrdiff_t dst_stride, const InterpKernel *filter, int x0_q4, int x_step_q4, int y0_q4, int y_step_q4, int w, int h);
++#define vpx_convolve_avg vpx_convolve_avg_c
++
++void vpx_convolve_copy_c(const uint8_t *src, ptrdiff_t src_stride, uint8_t *dst, ptrdiff_t dst_stride, const InterpKernel *filter, int x0_q4, int x_step_q4, int y0_q4, int y_step_q4, int w, int h);
++#define vpx_convolve_copy vpx_convolve_copy_c
++
++void vpx_d117_predictor_16x16_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_d117_predictor_16x16 vpx_d117_predictor_16x16_c
++
++void vpx_d117_predictor_32x32_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_d117_predictor_32x32 vpx_d117_predictor_32x32_c
++
++void vpx_d117_predictor_4x4_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_d117_predictor_4x4 vpx_d117_predictor_4x4_c
++
++void vpx_d117_predictor_8x8_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_d117_predictor_8x8 vpx_d117_predictor_8x8_c
++
++void vpx_d135_predictor_16x16_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_d135_predictor_16x16 vpx_d135_predictor_16x16_c
++
++void vpx_d135_predictor_32x32_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_d135_predictor_32x32 vpx_d135_predictor_32x32_c
++
++void vpx_d135_predictor_4x4_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_d135_predictor_4x4 vpx_d135_predictor_4x4_c
++
++void vpx_d135_predictor_8x8_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_d135_predictor_8x8 vpx_d135_predictor_8x8_c
++
++void vpx_d153_predictor_16x16_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_d153_predictor_16x16 vpx_d153_predictor_16x16_c
++
++void vpx_d153_predictor_32x32_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_d153_predictor_32x32 vpx_d153_predictor_32x32_c
++
++void vpx_d153_predictor_4x4_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_d153_predictor_4x4 vpx_d153_predictor_4x4_c
++
++void vpx_d153_predictor_8x8_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_d153_predictor_8x8 vpx_d153_predictor_8x8_c
++
++void vpx_d207_predictor_16x16_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_d207_predictor_16x16 vpx_d207_predictor_16x16_c
++
++void vpx_d207_predictor_32x32_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_d207_predictor_32x32 vpx_d207_predictor_32x32_c
++
++void vpx_d207_predictor_4x4_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_d207_predictor_4x4 vpx_d207_predictor_4x4_c
++
++void vpx_d207_predictor_8x8_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_d207_predictor_8x8 vpx_d207_predictor_8x8_c
++
++void vpx_d45_predictor_16x16_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_d45_predictor_16x16 vpx_d45_predictor_16x16_c
++
++void vpx_d45_predictor_32x32_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_d45_predictor_32x32 vpx_d45_predictor_32x32_c
++
++void vpx_d45_predictor_4x4_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_d45_predictor_4x4 vpx_d45_predictor_4x4_c
++
++void vpx_d45_predictor_8x8_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_d45_predictor_8x8 vpx_d45_predictor_8x8_c
++
++void vpx_d45e_predictor_4x4_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_d45e_predictor_4x4 vpx_d45e_predictor_4x4_c
++
++void vpx_d63_predictor_16x16_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_d63_predictor_16x16 vpx_d63_predictor_16x16_c
++
++void vpx_d63_predictor_32x32_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_d63_predictor_32x32 vpx_d63_predictor_32x32_c
++
++void vpx_d63_predictor_4x4_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_d63_predictor_4x4 vpx_d63_predictor_4x4_c
++
++void vpx_d63_predictor_8x8_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_d63_predictor_8x8 vpx_d63_predictor_8x8_c
++
++void vpx_d63e_predictor_4x4_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_d63e_predictor_4x4 vpx_d63e_predictor_4x4_c
++
++void vpx_dc_128_predictor_16x16_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_dc_128_predictor_16x16 vpx_dc_128_predictor_16x16_c
++
++void vpx_dc_128_predictor_32x32_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_dc_128_predictor_32x32 vpx_dc_128_predictor_32x32_c
++
++void vpx_dc_128_predictor_4x4_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_dc_128_predictor_4x4 vpx_dc_128_predictor_4x4_c
++
++void vpx_dc_128_predictor_8x8_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_dc_128_predictor_8x8 vpx_dc_128_predictor_8x8_c
++
++void vpx_dc_left_predictor_16x16_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_dc_left_predictor_16x16 vpx_dc_left_predictor_16x16_c
++
++void vpx_dc_left_predictor_32x32_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_dc_left_predictor_32x32 vpx_dc_left_predictor_32x32_c
++
++void vpx_dc_left_predictor_4x4_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_dc_left_predictor_4x4 vpx_dc_left_predictor_4x4_c
++
++void vpx_dc_left_predictor_8x8_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_dc_left_predictor_8x8 vpx_dc_left_predictor_8x8_c
++
++void vpx_dc_predictor_16x16_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_dc_predictor_16x16 vpx_dc_predictor_16x16_c
++
++void vpx_dc_predictor_32x32_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_dc_predictor_32x32 vpx_dc_predictor_32x32_c
++
++void vpx_dc_predictor_4x4_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_dc_predictor_4x4 vpx_dc_predictor_4x4_c
++
++void vpx_dc_predictor_8x8_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_dc_predictor_8x8 vpx_dc_predictor_8x8_c
++
++void vpx_dc_top_predictor_16x16_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_dc_top_predictor_16x16 vpx_dc_top_predictor_16x16_c
++
++void vpx_dc_top_predictor_32x32_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_dc_top_predictor_32x32 vpx_dc_top_predictor_32x32_c
++
++void vpx_dc_top_predictor_4x4_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_dc_top_predictor_4x4 vpx_dc_top_predictor_4x4_c
++
++void vpx_dc_top_predictor_8x8_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_dc_top_predictor_8x8 vpx_dc_top_predictor_8x8_c
++
++void vpx_fdct16x16_c(const int16_t *input, tran_low_t *output, int stride);
++#define vpx_fdct16x16 vpx_fdct16x16_c
++
++void vpx_fdct16x16_1_c(const int16_t *input, tran_low_t *output, int stride);
++#define vpx_fdct16x16_1 vpx_fdct16x16_1_c
++
++void vpx_fdct32x32_c(const int16_t *input, tran_low_t *output, int stride);
++#define vpx_fdct32x32 vpx_fdct32x32_c
++
++void vpx_fdct32x32_1_c(const int16_t *input, tran_low_t *output, int stride);
++#define vpx_fdct32x32_1 vpx_fdct32x32_1_c
++
++void vpx_fdct32x32_rd_c(const int16_t *input, tran_low_t *output, int stride);
++#define vpx_fdct32x32_rd vpx_fdct32x32_rd_c
++
++void vpx_fdct4x4_c(const int16_t *input, tran_low_t *output, int stride);
++#define vpx_fdct4x4 vpx_fdct4x4_c
++
++void vpx_fdct4x4_1_c(const int16_t *input, tran_low_t *output, int stride);
++#define vpx_fdct4x4_1 vpx_fdct4x4_1_c
++
++void vpx_fdct8x8_c(const int16_t *input, tran_low_t *output, int stride);
++#define vpx_fdct8x8 vpx_fdct8x8_c
++
++void vpx_fdct8x8_1_c(const int16_t *input, tran_low_t *output, int stride);
++#define vpx_fdct8x8_1 vpx_fdct8x8_1_c
++
++void vpx_get16x16var_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse, int *sum);
++#define vpx_get16x16var vpx_get16x16var_c
++
++unsigned int vpx_get4x4sse_cs_c(const unsigned char *src_ptr, int src_stride, const unsigned char *ref_ptr, int ref_stride);
++#define vpx_get4x4sse_cs vpx_get4x4sse_cs_c
++
++void vpx_get8x8var_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse, int *sum);
++#define vpx_get8x8var vpx_get8x8var_c
++
++unsigned int vpx_get_mb_ss_c(const int16_t *);
++#define vpx_get_mb_ss vpx_get_mb_ss_c
++
++void vpx_h_predictor_16x16_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_h_predictor_16x16 vpx_h_predictor_16x16_c
++
++void vpx_h_predictor_32x32_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_h_predictor_32x32 vpx_h_predictor_32x32_c
++
++void vpx_h_predictor_4x4_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_h_predictor_4x4 vpx_h_predictor_4x4_c
++
++void vpx_h_predictor_8x8_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_h_predictor_8x8 vpx_h_predictor_8x8_c
++
++void vpx_hadamard_16x16_c(const int16_t *src_diff, ptrdiff_t src_stride, int16_t *coeff);
++#define vpx_hadamard_16x16 vpx_hadamard_16x16_c
++
++void vpx_hadamard_32x32_c(const int16_t *src_diff, ptrdiff_t src_stride, int16_t *coeff);
++#define vpx_hadamard_32x32 vpx_hadamard_32x32_c
++
++void vpx_hadamard_8x8_c(const int16_t *src_diff, ptrdiff_t src_stride, int16_t *coeff);
++#define vpx_hadamard_8x8 vpx_hadamard_8x8_c
++
++void vpx_he_predictor_4x4_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_he_predictor_4x4 vpx_he_predictor_4x4_c
++
++void vpx_idct16x16_10_add_c(const tran_low_t *input, uint8_t *dest, int stride);
++#define vpx_idct16x16_10_add vpx_idct16x16_10_add_c
++
++void vpx_idct16x16_1_add_c(const tran_low_t *input, uint8_t *dest, int stride);
++#define vpx_idct16x16_1_add vpx_idct16x16_1_add_c
++
++void vpx_idct16x16_256_add_c(const tran_low_t *input, uint8_t *dest, int stride);
++#define vpx_idct16x16_256_add vpx_idct16x16_256_add_c
++
++void vpx_idct16x16_38_add_c(const tran_low_t *input, uint8_t *dest, int stride);
++#define vpx_idct16x16_38_add vpx_idct16x16_38_add_c
++
++void vpx_idct32x32_1024_add_c(const tran_low_t *input, uint8_t *dest, int stride);
++#define vpx_idct32x32_1024_add vpx_idct32x32_1024_add_c
++
++void vpx_idct32x32_135_add_c(const tran_low_t *input, uint8_t *dest, int stride);
++#define vpx_idct32x32_135_add vpx_idct32x32_135_add_c
++
++void vpx_idct32x32_1_add_c(const tran_low_t *input, uint8_t *dest, int stride);
++#define vpx_idct32x32_1_add vpx_idct32x32_1_add_c
++
++void vpx_idct32x32_34_add_c(const tran_low_t *input, uint8_t *dest, int stride);
++#define vpx_idct32x32_34_add vpx_idct32x32_34_add_c
++
++void vpx_idct4x4_16_add_c(const tran_low_t *input, uint8_t *dest, int stride);
++#define vpx_idct4x4_16_add vpx_idct4x4_16_add_c
++
++void vpx_idct4x4_1_add_c(const tran_low_t *input, uint8_t *dest, int stride);
++#define vpx_idct4x4_1_add vpx_idct4x4_1_add_c
++
++void vpx_idct8x8_12_add_c(const tran_low_t *input, uint8_t *dest, int stride);
++#define vpx_idct8x8_12_add vpx_idct8x8_12_add_c
++
++void vpx_idct8x8_1_add_c(const tran_low_t *input, uint8_t *dest, int stride);
++#define vpx_idct8x8_1_add vpx_idct8x8_1_add_c
++
++void vpx_idct8x8_64_add_c(const tran_low_t *input, uint8_t *dest, int stride);
++#define vpx_idct8x8_64_add vpx_idct8x8_64_add_c
++
++int16_t vpx_int_pro_col_c(const uint8_t *ref, const int width);
++#define vpx_int_pro_col vpx_int_pro_col_c
++
++void vpx_int_pro_row_c(int16_t hbuf[16], const uint8_t *ref, const int ref_stride, const int height);
++#define vpx_int_pro_row vpx_int_pro_row_c
++
++void vpx_iwht4x4_16_add_c(const tran_low_t *input, uint8_t *dest, int stride);
++#define vpx_iwht4x4_16_add vpx_iwht4x4_16_add_c
++
++void vpx_iwht4x4_1_add_c(const tran_low_t *input, uint8_t *dest, int stride);
++#define vpx_iwht4x4_1_add vpx_iwht4x4_1_add_c
++
++void vpx_lpf_horizontal_16_c(uint8_t *s, int pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
++#define vpx_lpf_horizontal_16 vpx_lpf_horizontal_16_c
++
++void vpx_lpf_horizontal_16_dual_c(uint8_t *s, int pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
++#define vpx_lpf_horizontal_16_dual vpx_lpf_horizontal_16_dual_c
++
++void vpx_lpf_horizontal_4_c(uint8_t *s, int pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
++#define vpx_lpf_horizontal_4 vpx_lpf_horizontal_4_c
++
++void vpx_lpf_horizontal_4_dual_c(uint8_t *s, int pitch, const uint8_t *blimit0, const uint8_t *limit0, const uint8_t *thresh0, const uint8_t *blimit1, const uint8_t *limit1, const uint8_t *thresh1);
++#define vpx_lpf_horizontal_4_dual vpx_lpf_horizontal_4_dual_c
++
++void vpx_lpf_horizontal_8_c(uint8_t *s, int pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
++#define vpx_lpf_horizontal_8 vpx_lpf_horizontal_8_c
++
++void vpx_lpf_horizontal_8_dual_c(uint8_t *s, int pitch, const uint8_t *blimit0, const uint8_t *limit0, const uint8_t *thresh0, const uint8_t *blimit1, const uint8_t *limit1, const uint8_t *thresh1);
++#define vpx_lpf_horizontal_8_dual vpx_lpf_horizontal_8_dual_c
++
++void vpx_lpf_vertical_16_c(uint8_t *s, int pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
++#define vpx_lpf_vertical_16 vpx_lpf_vertical_16_c
++
++void vpx_lpf_vertical_16_dual_c(uint8_t *s, int pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
++#define vpx_lpf_vertical_16_dual vpx_lpf_vertical_16_dual_c
++
++void vpx_lpf_vertical_4_c(uint8_t *s, int pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
++#define vpx_lpf_vertical_4 vpx_lpf_vertical_4_c
++
++void vpx_lpf_vertical_4_dual_c(uint8_t *s, int pitch, const uint8_t *blimit0, const uint8_t *limit0, const uint8_t *thresh0, const uint8_t *blimit1, const uint8_t *limit1, const uint8_t *thresh1);
++#define vpx_lpf_vertical_4_dual vpx_lpf_vertical_4_dual_c
++
++void vpx_lpf_vertical_8_c(uint8_t *s, int pitch, const uint8_t *blimit, const uint8_t *limit, const uint8_t *thresh);
++#define vpx_lpf_vertical_8 vpx_lpf_vertical_8_c
++
++void vpx_lpf_vertical_8_dual_c(uint8_t *s, int pitch, const uint8_t *blimit0, const uint8_t *limit0, const uint8_t *thresh0, const uint8_t *blimit1, const uint8_t *limit1, const uint8_t *thresh1);
++#define vpx_lpf_vertical_8_dual vpx_lpf_vertical_8_dual_c
++
++void vpx_minmax_8x8_c(const uint8_t *s, int p, const uint8_t *d, int dp, int *min, int *max);
++#define vpx_minmax_8x8 vpx_minmax_8x8_c
++
++unsigned int vpx_mse16x16_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
++#define vpx_mse16x16 vpx_mse16x16_c
++
++unsigned int vpx_mse16x8_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
++#define vpx_mse16x8 vpx_mse16x8_c
++
++unsigned int vpx_mse8x16_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
++#define vpx_mse8x16 vpx_mse8x16_c
++
++unsigned int vpx_mse8x8_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
++#define vpx_mse8x8 vpx_mse8x8_c
++
++void vpx_quantize_b_c(const tran_low_t *coeff_ptr, intptr_t n_coeffs, const struct macroblock_plane *const mb_plane, tran_low_t *qcoeff_ptr, tran_low_t *dqcoeff_ptr, const int16_t *dequant_ptr, uint16_t *eob_ptr, const struct ScanOrder *const scan_order);
++#define vpx_quantize_b vpx_quantize_b_c
++
++void vpx_quantize_b_32x32_c(const tran_low_t *coeff_ptr, const struct macroblock_plane *const mb_plane, tran_low_t *qcoeff_ptr, tran_low_t *dqcoeff_ptr, const int16_t *dequant_ptr, uint16_t *eob_ptr, const struct ScanOrder *const scan_order);
++#define vpx_quantize_b_32x32 vpx_quantize_b_32x32_c
++
++unsigned int vpx_sad16x16_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride);
++#define vpx_sad16x16 vpx_sad16x16_c
++
++unsigned int vpx_sad16x16_avg_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, const uint8_t *second_pred);
++#define vpx_sad16x16_avg vpx_sad16x16_avg_c
++
++void vpx_sad16x16x4d_c(const uint8_t *src_ptr, int src_stride, const uint8_t *const ref_array[4], int ref_stride, uint32_t sad_array[4]);
++#define vpx_sad16x16x4d vpx_sad16x16x4d_c
++
++unsigned int vpx_sad16x32_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride);
++#define vpx_sad16x32 vpx_sad16x32_c
++
++unsigned int vpx_sad16x32_avg_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, const uint8_t *second_pred);
++#define vpx_sad16x32_avg vpx_sad16x32_avg_c
++
++void vpx_sad16x32x4d_c(const uint8_t *src_ptr, int src_stride, const uint8_t *const ref_array[4], int ref_stride, uint32_t sad_array[4]);
++#define vpx_sad16x32x4d vpx_sad16x32x4d_c
++
++unsigned int vpx_sad16x8_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride);
++#define vpx_sad16x8 vpx_sad16x8_c
++
++unsigned int vpx_sad16x8_avg_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, const uint8_t *second_pred);
++#define vpx_sad16x8_avg vpx_sad16x8_avg_c
++
++void vpx_sad16x8x4d_c(const uint8_t *src_ptr, int src_stride, const uint8_t *const ref_array[4], int ref_stride, uint32_t sad_array[4]);
++#define vpx_sad16x8x4d vpx_sad16x8x4d_c
++
++unsigned int vpx_sad32x16_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride);
++#define vpx_sad32x16 vpx_sad32x16_c
++
++unsigned int vpx_sad32x16_avg_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, const uint8_t *second_pred);
++#define vpx_sad32x16_avg vpx_sad32x16_avg_c
++
++void vpx_sad32x16x4d_c(const uint8_t *src_ptr, int src_stride, const uint8_t *const ref_array[4], int ref_stride, uint32_t sad_array[4]);
++#define vpx_sad32x16x4d vpx_sad32x16x4d_c
++
++unsigned int vpx_sad32x32_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride);
++#define vpx_sad32x32 vpx_sad32x32_c
++
++unsigned int vpx_sad32x32_avg_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, const uint8_t *second_pred);
++#define vpx_sad32x32_avg vpx_sad32x32_avg_c
++
++void vpx_sad32x32x4d_c(const uint8_t *src_ptr, int src_stride, const uint8_t *const ref_array[4], int ref_stride, uint32_t sad_array[4]);
++#define vpx_sad32x32x4d vpx_sad32x32x4d_c
++
++unsigned int vpx_sad32x64_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride);
++#define vpx_sad32x64 vpx_sad32x64_c
++
++unsigned int vpx_sad32x64_avg_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, const uint8_t *second_pred);
++#define vpx_sad32x64_avg vpx_sad32x64_avg_c
++
++void vpx_sad32x64x4d_c(const uint8_t *src_ptr, int src_stride, const uint8_t *const ref_array[4], int ref_stride, uint32_t sad_array[4]);
++#define vpx_sad32x64x4d vpx_sad32x64x4d_c
++
++unsigned int vpx_sad4x4_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride);
++#define vpx_sad4x4 vpx_sad4x4_c
++
++unsigned int vpx_sad4x4_avg_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, const uint8_t *second_pred);
++#define vpx_sad4x4_avg vpx_sad4x4_avg_c
++
++void vpx_sad4x4x4d_c(const uint8_t *src_ptr, int src_stride, const uint8_t *const ref_array[4], int ref_stride, uint32_t sad_array[4]);
++#define vpx_sad4x4x4d vpx_sad4x4x4d_c
++
++unsigned int vpx_sad4x8_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride);
++#define vpx_sad4x8 vpx_sad4x8_c
++
++unsigned int vpx_sad4x8_avg_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, const uint8_t *second_pred);
++#define vpx_sad4x8_avg vpx_sad4x8_avg_c
++
++void vpx_sad4x8x4d_c(const uint8_t *src_ptr, int src_stride, const uint8_t *const ref_array[4], int ref_stride, uint32_t sad_array[4]);
++#define vpx_sad4x8x4d vpx_sad4x8x4d_c
++
++unsigned int vpx_sad64x32_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride);
++#define vpx_sad64x32 vpx_sad64x32_c
++
++unsigned int vpx_sad64x32_avg_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, const uint8_t *second_pred);
++#define vpx_sad64x32_avg vpx_sad64x32_avg_c
++
++void vpx_sad64x32x4d_c(const uint8_t *src_ptr, int src_stride, const uint8_t *const ref_array[4], int ref_stride, uint32_t sad_array[4]);
++#define vpx_sad64x32x4d vpx_sad64x32x4d_c
++
++unsigned int vpx_sad64x64_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride);
++#define vpx_sad64x64 vpx_sad64x64_c
++
++unsigned int vpx_sad64x64_avg_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, const uint8_t *second_pred);
++#define vpx_sad64x64_avg vpx_sad64x64_avg_c
++
++void vpx_sad64x64x4d_c(const uint8_t *src_ptr, int src_stride, const uint8_t *const ref_array[4], int ref_stride, uint32_t sad_array[4]);
++#define vpx_sad64x64x4d vpx_sad64x64x4d_c
++
++unsigned int vpx_sad8x16_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride);
++#define vpx_sad8x16 vpx_sad8x16_c
++
++unsigned int vpx_sad8x16_avg_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, const uint8_t *second_pred);
++#define vpx_sad8x16_avg vpx_sad8x16_avg_c
++
++void vpx_sad8x16x4d_c(const uint8_t *src_ptr, int src_stride, const uint8_t *const ref_array[4], int ref_stride, uint32_t sad_array[4]);
++#define vpx_sad8x16x4d vpx_sad8x16x4d_c
++
++unsigned int vpx_sad8x4_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride);
++#define vpx_sad8x4 vpx_sad8x4_c
++
++unsigned int vpx_sad8x4_avg_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, const uint8_t *second_pred);
++#define vpx_sad8x4_avg vpx_sad8x4_avg_c
++
++void vpx_sad8x4x4d_c(const uint8_t *src_ptr, int src_stride, const uint8_t *const ref_array[4], int ref_stride, uint32_t sad_array[4]);
++#define vpx_sad8x4x4d vpx_sad8x4x4d_c
++
++unsigned int vpx_sad8x8_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride);
++#define vpx_sad8x8 vpx_sad8x8_c
++
++unsigned int vpx_sad8x8_avg_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, const uint8_t *second_pred);
++#define vpx_sad8x8_avg vpx_sad8x8_avg_c
++
++void vpx_sad8x8x4d_c(const uint8_t *src_ptr, int src_stride, const uint8_t *const ref_array[4], int ref_stride, uint32_t sad_array[4]);
++#define vpx_sad8x8x4d vpx_sad8x8x4d_c
++
++unsigned int vpx_sad_skip_16x16_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride);
++#define vpx_sad_skip_16x16 vpx_sad_skip_16x16_c
++
++void vpx_sad_skip_16x16x4d_c(const uint8_t *src_ptr, int src_stride, const uint8_t *const ref_array[4], int ref_stride, uint32_t sad_array[4]);
++#define vpx_sad_skip_16x16x4d vpx_sad_skip_16x16x4d_c
++
++unsigned int vpx_sad_skip_16x32_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride);
++#define vpx_sad_skip_16x32 vpx_sad_skip_16x32_c
++
++void vpx_sad_skip_16x32x4d_c(const uint8_t *src_ptr, int src_stride, const uint8_t *const ref_array[4], int ref_stride, uint32_t sad_array[4]);
++#define vpx_sad_skip_16x32x4d vpx_sad_skip_16x32x4d_c
++
++unsigned int vpx_sad_skip_16x8_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride);
++#define vpx_sad_skip_16x8 vpx_sad_skip_16x8_c
++
++void vpx_sad_skip_16x8x4d_c(const uint8_t *src_ptr, int src_stride, const uint8_t *const ref_array[4], int ref_stride, uint32_t sad_array[4]);
++#define vpx_sad_skip_16x8x4d vpx_sad_skip_16x8x4d_c
++
++unsigned int vpx_sad_skip_32x16_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride);
++#define vpx_sad_skip_32x16 vpx_sad_skip_32x16_c
++
++void vpx_sad_skip_32x16x4d_c(const uint8_t *src_ptr, int src_stride, const uint8_t *const ref_array[4], int ref_stride, uint32_t sad_array[4]);
++#define vpx_sad_skip_32x16x4d vpx_sad_skip_32x16x4d_c
++
++unsigned int vpx_sad_skip_32x32_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride);
++#define vpx_sad_skip_32x32 vpx_sad_skip_32x32_c
++
++void vpx_sad_skip_32x32x4d_c(const uint8_t *src_ptr, int src_stride, const uint8_t *const ref_array[4], int ref_stride, uint32_t sad_array[4]);
++#define vpx_sad_skip_32x32x4d vpx_sad_skip_32x32x4d_c
++
++unsigned int vpx_sad_skip_32x64_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride);
++#define vpx_sad_skip_32x64 vpx_sad_skip_32x64_c
++
++void vpx_sad_skip_32x64x4d_c(const uint8_t *src_ptr, int src_stride, const uint8_t *const ref_array[4], int ref_stride, uint32_t sad_array[4]);
++#define vpx_sad_skip_32x64x4d vpx_sad_skip_32x64x4d_c
++
++unsigned int vpx_sad_skip_4x4_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride);
++#define vpx_sad_skip_4x4 vpx_sad_skip_4x4_c
++
++void vpx_sad_skip_4x4x4d_c(const uint8_t *src_ptr, int src_stride, const uint8_t *const ref_array[4], int ref_stride, uint32_t sad_array[4]);
++#define vpx_sad_skip_4x4x4d vpx_sad_skip_4x4x4d_c
++
++unsigned int vpx_sad_skip_4x8_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride);
++#define vpx_sad_skip_4x8 vpx_sad_skip_4x8_c
++
++void vpx_sad_skip_4x8x4d_c(const uint8_t *src_ptr, int src_stride, const uint8_t *const ref_array[4], int ref_stride, uint32_t sad_array[4]);
++#define vpx_sad_skip_4x8x4d vpx_sad_skip_4x8x4d_c
++
++unsigned int vpx_sad_skip_64x32_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride);
++#define vpx_sad_skip_64x32 vpx_sad_skip_64x32_c
++
++void vpx_sad_skip_64x32x4d_c(const uint8_t *src_ptr, int src_stride, const uint8_t *const ref_array[4], int ref_stride, uint32_t sad_array[4]);
++#define vpx_sad_skip_64x32x4d vpx_sad_skip_64x32x4d_c
++
++unsigned int vpx_sad_skip_64x64_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride);
++#define vpx_sad_skip_64x64 vpx_sad_skip_64x64_c
++
++void vpx_sad_skip_64x64x4d_c(const uint8_t *src_ptr, int src_stride, const uint8_t *const ref_array[4], int ref_stride, uint32_t sad_array[4]);
++#define vpx_sad_skip_64x64x4d vpx_sad_skip_64x64x4d_c
++
++unsigned int vpx_sad_skip_8x16_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride);
++#define vpx_sad_skip_8x16 vpx_sad_skip_8x16_c
++
++void vpx_sad_skip_8x16x4d_c(const uint8_t *src_ptr, int src_stride, const uint8_t *const ref_array[4], int ref_stride, uint32_t sad_array[4]);
++#define vpx_sad_skip_8x16x4d vpx_sad_skip_8x16x4d_c
++
++unsigned int vpx_sad_skip_8x4_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride);
++#define vpx_sad_skip_8x4 vpx_sad_skip_8x4_c
++
++void vpx_sad_skip_8x4x4d_c(const uint8_t *src_ptr, int src_stride, const uint8_t *const ref_array[4], int ref_stride, uint32_t sad_array[4]);
++#define vpx_sad_skip_8x4x4d vpx_sad_skip_8x4x4d_c
++
++unsigned int vpx_sad_skip_8x8_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride);
++#define vpx_sad_skip_8x8 vpx_sad_skip_8x8_c
++
++void vpx_sad_skip_8x8x4d_c(const uint8_t *src_ptr, int src_stride, const uint8_t *const ref_array[4], int ref_stride, uint32_t sad_array[4]);
++#define vpx_sad_skip_8x8x4d vpx_sad_skip_8x8x4d_c
++
++int vpx_satd_c(const int16_t *coeff, int length);
++#define vpx_satd vpx_satd_c
++
++void vpx_scaled_2d_c(const uint8_t *src, ptrdiff_t src_stride, uint8_t *dst, ptrdiff_t dst_stride, const InterpKernel *filter, int x0_q4, int x_step_q4, int y0_q4, int y_step_q4, int w, int h);
++#define vpx_scaled_2d vpx_scaled_2d_c
++
++void vpx_scaled_avg_2d_c(const uint8_t *src, ptrdiff_t src_stride, uint8_t *dst, ptrdiff_t dst_stride, const InterpKernel *filter, int x0_q4, int x_step_q4, int y0_q4, int y_step_q4, int w, int h);
++#define vpx_scaled_avg_2d vpx_scaled_avg_2d_c
++
++void vpx_scaled_avg_horiz_c(const uint8_t *src, ptrdiff_t src_stride, uint8_t *dst, ptrdiff_t dst_stride, const InterpKernel *filter, int x0_q4, int x_step_q4, int y0_q4, int y_step_q4, int w, int h);
++#define vpx_scaled_avg_horiz vpx_scaled_avg_horiz_c
++
++void vpx_scaled_avg_vert_c(const uint8_t *src, ptrdiff_t src_stride, uint8_t *dst, ptrdiff_t dst_stride, const InterpKernel *filter, int x0_q4, int x_step_q4, int y0_q4, int y_step_q4, int w, int h);
++#define vpx_scaled_avg_vert vpx_scaled_avg_vert_c
++
++void vpx_scaled_horiz_c(const uint8_t *src, ptrdiff_t src_stride, uint8_t *dst, ptrdiff_t dst_stride, const InterpKernel *filter, int x0_q4, int x_step_q4, int y0_q4, int y_step_q4, int w, int h);
++#define vpx_scaled_horiz vpx_scaled_horiz_c
++
++void vpx_scaled_vert_c(const uint8_t *src, ptrdiff_t src_stride, uint8_t *dst, ptrdiff_t dst_stride, const InterpKernel *filter, int x0_q4, int x_step_q4, int y0_q4, int y_step_q4, int w, int h);
++#define vpx_scaled_vert vpx_scaled_vert_c
++
++int64_t vpx_sse_c(const uint8_t *src, int src_stride, const uint8_t *ref, int ref_stride, int width, int height);
++#define vpx_sse vpx_sse_c
++
++uint32_t vpx_sub_pixel_avg_variance16x16_c(const uint8_t *src_ptr, int src_stride, int x_offset, int y_offset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse, const uint8_t *second_pred);
++#define vpx_sub_pixel_avg_variance16x16 vpx_sub_pixel_avg_variance16x16_c
++
++uint32_t vpx_sub_pixel_avg_variance16x32_c(const uint8_t *src_ptr, int src_stride, int x_offset, int y_offset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse, const uint8_t *second_pred);
++#define vpx_sub_pixel_avg_variance16x32 vpx_sub_pixel_avg_variance16x32_c
++
++uint32_t vpx_sub_pixel_avg_variance16x8_c(const uint8_t *src_ptr, int src_stride, int x_offset, int y_offset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse, const uint8_t *second_pred);
++#define vpx_sub_pixel_avg_variance16x8 vpx_sub_pixel_avg_variance16x8_c
++
++uint32_t vpx_sub_pixel_avg_variance32x16_c(const uint8_t *src_ptr, int src_stride, int x_offset, int y_offset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse, const uint8_t *second_pred);
++#define vpx_sub_pixel_avg_variance32x16 vpx_sub_pixel_avg_variance32x16_c
++
++uint32_t vpx_sub_pixel_avg_variance32x32_c(const uint8_t *src_ptr, int src_stride, int x_offset, int y_offset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse, const uint8_t *second_pred);
++#define vpx_sub_pixel_avg_variance32x32 vpx_sub_pixel_avg_variance32x32_c
++
++uint32_t vpx_sub_pixel_avg_variance32x64_c(const uint8_t *src_ptr, int src_stride, int x_offset, int y_offset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse, const uint8_t *second_pred);
++#define vpx_sub_pixel_avg_variance32x64 vpx_sub_pixel_avg_variance32x64_c
++
++uint32_t vpx_sub_pixel_avg_variance4x4_c(const uint8_t *src_ptr, int src_stride, int x_offset, int y_offset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse, const uint8_t *second_pred);
++#define vpx_sub_pixel_avg_variance4x4 vpx_sub_pixel_avg_variance4x4_c
++
++uint32_t vpx_sub_pixel_avg_variance4x8_c(const uint8_t *src_ptr, int src_stride, int x_offset, int y_offset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse, const uint8_t *second_pred);
++#define vpx_sub_pixel_avg_variance4x8 vpx_sub_pixel_avg_variance4x8_c
++
++uint32_t vpx_sub_pixel_avg_variance64x32_c(const uint8_t *src_ptr, int src_stride, int x_offset, int y_offset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse, const uint8_t *second_pred);
++#define vpx_sub_pixel_avg_variance64x32 vpx_sub_pixel_avg_variance64x32_c
++
++uint32_t vpx_sub_pixel_avg_variance64x64_c(const uint8_t *src_ptr, int src_stride, int x_offset, int y_offset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse, const uint8_t *second_pred);
++#define vpx_sub_pixel_avg_variance64x64 vpx_sub_pixel_avg_variance64x64_c
++
++uint32_t vpx_sub_pixel_avg_variance8x16_c(const uint8_t *src_ptr, int src_stride, int x_offset, int y_offset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse, const uint8_t *second_pred);
++#define vpx_sub_pixel_avg_variance8x16 vpx_sub_pixel_avg_variance8x16_c
++
++uint32_t vpx_sub_pixel_avg_variance8x4_c(const uint8_t *src_ptr, int src_stride, int x_offset, int y_offset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse, const uint8_t *second_pred);
++#define vpx_sub_pixel_avg_variance8x4 vpx_sub_pixel_avg_variance8x4_c
++
++uint32_t vpx_sub_pixel_avg_variance8x8_c(const uint8_t *src_ptr, int src_stride, int x_offset, int y_offset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse, const uint8_t *second_pred);
++#define vpx_sub_pixel_avg_variance8x8 vpx_sub_pixel_avg_variance8x8_c
++
++uint32_t vpx_sub_pixel_variance16x16_c(const uint8_t *src_ptr, int src_stride, int x_offset, int y_offset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
++#define vpx_sub_pixel_variance16x16 vpx_sub_pixel_variance16x16_c
++
++uint32_t vpx_sub_pixel_variance16x32_c(const uint8_t *src_ptr, int src_stride, int x_offset, int y_offset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
++#define vpx_sub_pixel_variance16x32 vpx_sub_pixel_variance16x32_c
++
++uint32_t vpx_sub_pixel_variance16x8_c(const uint8_t *src_ptr, int src_stride, int x_offset, int y_offset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
++#define vpx_sub_pixel_variance16x8 vpx_sub_pixel_variance16x8_c
++
++uint32_t vpx_sub_pixel_variance32x16_c(const uint8_t *src_ptr, int src_stride, int x_offset, int y_offset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
++#define vpx_sub_pixel_variance32x16 vpx_sub_pixel_variance32x16_c
++
++uint32_t vpx_sub_pixel_variance32x32_c(const uint8_t *src_ptr, int src_stride, int x_offset, int y_offset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
++#define vpx_sub_pixel_variance32x32 vpx_sub_pixel_variance32x32_c
++
++uint32_t vpx_sub_pixel_variance32x64_c(const uint8_t *src_ptr, int src_stride, int x_offset, int y_offset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
++#define vpx_sub_pixel_variance32x64 vpx_sub_pixel_variance32x64_c
++
++uint32_t vpx_sub_pixel_variance4x4_c(const uint8_t *src_ptr, int src_stride, int x_offset, int y_offset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
++#define vpx_sub_pixel_variance4x4 vpx_sub_pixel_variance4x4_c
++
++uint32_t vpx_sub_pixel_variance4x8_c(const uint8_t *src_ptr, int src_stride, int x_offset, int y_offset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
++#define vpx_sub_pixel_variance4x8 vpx_sub_pixel_variance4x8_c
++
++uint32_t vpx_sub_pixel_variance64x32_c(const uint8_t *src_ptr, int src_stride, int x_offset, int y_offset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
++#define vpx_sub_pixel_variance64x32 vpx_sub_pixel_variance64x32_c
++
++uint32_t vpx_sub_pixel_variance64x64_c(const uint8_t *src_ptr, int src_stride, int x_offset, int y_offset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
++#define vpx_sub_pixel_variance64x64 vpx_sub_pixel_variance64x64_c
++
++uint32_t vpx_sub_pixel_variance8x16_c(const uint8_t *src_ptr, int src_stride, int x_offset, int y_offset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
++#define vpx_sub_pixel_variance8x16 vpx_sub_pixel_variance8x16_c
++
++uint32_t vpx_sub_pixel_variance8x4_c(const uint8_t *src_ptr, int src_stride, int x_offset, int y_offset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
++#define vpx_sub_pixel_variance8x4 vpx_sub_pixel_variance8x4_c
++
++uint32_t vpx_sub_pixel_variance8x8_c(const uint8_t *src_ptr, int src_stride, int x_offset, int y_offset, const uint8_t *ref_ptr, int ref_stride, uint32_t *sse);
++#define vpx_sub_pixel_variance8x8 vpx_sub_pixel_variance8x8_c
++
++void vpx_subtract_block_c(int rows, int cols, int16_t *diff_ptr, ptrdiff_t diff_stride, const uint8_t *src_ptr, ptrdiff_t src_stride, const uint8_t *pred_ptr, ptrdiff_t pred_stride);
++#define vpx_subtract_block vpx_subtract_block_c
++
++uint64_t vpx_sum_squares_2d_i16_c(const int16_t *src, int stride, int size);
++#define vpx_sum_squares_2d_i16 vpx_sum_squares_2d_i16_c
++
++void vpx_tm_predictor_16x16_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_tm_predictor_16x16 vpx_tm_predictor_16x16_c
++
++void vpx_tm_predictor_32x32_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_tm_predictor_32x32 vpx_tm_predictor_32x32_c
++
++void vpx_tm_predictor_4x4_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_tm_predictor_4x4 vpx_tm_predictor_4x4_c
++
++void vpx_tm_predictor_8x8_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_tm_predictor_8x8 vpx_tm_predictor_8x8_c
++
++void vpx_v_predictor_16x16_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_v_predictor_16x16 vpx_v_predictor_16x16_c
++
++void vpx_v_predictor_32x32_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_v_predictor_32x32 vpx_v_predictor_32x32_c
++
++void vpx_v_predictor_4x4_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_v_predictor_4x4 vpx_v_predictor_4x4_c
++
++void vpx_v_predictor_8x8_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_v_predictor_8x8 vpx_v_predictor_8x8_c
++
++unsigned int vpx_variance16x16_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
++#define vpx_variance16x16 vpx_variance16x16_c
++
++unsigned int vpx_variance16x32_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
++#define vpx_variance16x32 vpx_variance16x32_c
++
++unsigned int vpx_variance16x8_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
++#define vpx_variance16x8 vpx_variance16x8_c
++
++unsigned int vpx_variance32x16_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
++#define vpx_variance32x16 vpx_variance32x16_c
++
++unsigned int vpx_variance32x32_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
++#define vpx_variance32x32 vpx_variance32x32_c
++
++unsigned int vpx_variance32x64_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
++#define vpx_variance32x64 vpx_variance32x64_c
++
++unsigned int vpx_variance4x4_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
++#define vpx_variance4x4 vpx_variance4x4_c
++
++unsigned int vpx_variance4x8_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
++#define vpx_variance4x8 vpx_variance4x8_c
++
++unsigned int vpx_variance64x32_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
++#define vpx_variance64x32 vpx_variance64x32_c
++
++unsigned int vpx_variance64x64_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
++#define vpx_variance64x64 vpx_variance64x64_c
++
++unsigned int vpx_variance8x16_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
++#define vpx_variance8x16 vpx_variance8x16_c
++
++unsigned int vpx_variance8x4_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
++#define vpx_variance8x4 vpx_variance8x4_c
++
++unsigned int vpx_variance8x8_c(const uint8_t *src_ptr, int src_stride, const uint8_t *ref_ptr, int ref_stride, unsigned int *sse);
++#define vpx_variance8x8 vpx_variance8x8_c
++
++void vpx_ve_predictor_4x4_c(uint8_t *dst, ptrdiff_t stride, const uint8_t *above, const uint8_t *left);
++#define vpx_ve_predictor_4x4 vpx_ve_predictor_4x4_c
++
++int vpx_vector_var_c(const int16_t *ref, const int16_t *src, const int bwl);
++#define vpx_vector_var vpx_vector_var_c
++
++void vpx_dsp_rtcd(void);
++
++#include "vpx_config.h"
++
++#ifdef RTCD_C
++static void setup_rtcd_internal(void)
++{
++}
++#endif
++
++#ifdef __cplusplus
++}  // extern "C"
++#endif
++
++#endif  // VPX_DSP_RTCD_H_
+diff --git a/media/libvpx/config/win/arm/vpx_scale_rtcd.h b/media/libvpx/config/win/arm/vpx_scale_rtcd.h
+new file mode 100644
+index 000000000..58485cb00
+--- /dev/null
++++ b/media/libvpx/config/win/arm/vpx_scale_rtcd.h
+@@ -0,0 +1,80 @@
++/*
++ *  Copyright (c) 2026 The WebM project authors. All Rights Reserved.
++ *
++ *  Use of this source code is governed by a BSD-style license
++ *  that can be found in the LICENSE file in the root of the source
++ *  tree. An additional intellectual property rights grant can be found
++ *  in the file PATENTS.  All contributing project authors may
++ *  be found in the AUTHORS file in the root of the source tree.
++ */
++
++// This file is generated. Do not edit.
++#ifndef VPX_SCALE_RTCD_H_
++#define VPX_SCALE_RTCD_H_
++
++#ifdef RTCD_C
++#define RTCD_EXTERN
++#else
++#define RTCD_EXTERN extern
++#endif
++
++struct yv12_buffer_config;
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++void vp8_horizontal_line_2_1_scale_c(const unsigned char *source, unsigned int source_width, unsigned char *dest, unsigned int dest_width);
++#define vp8_horizontal_line_2_1_scale vp8_horizontal_line_2_1_scale_c
++
++void vp8_horizontal_line_5_3_scale_c(const unsigned char *source, unsigned int source_width, unsigned char *dest, unsigned int dest_width);
++#define vp8_horizontal_line_5_3_scale vp8_horizontal_line_5_3_scale_c
++
++void vp8_horizontal_line_5_4_scale_c(const unsigned char *source, unsigned int source_width, unsigned char *dest, unsigned int dest_width);
++#define vp8_horizontal_line_5_4_scale vp8_horizontal_line_5_4_scale_c
++
++void vp8_vertical_band_2_1_scale_c(unsigned char *source, unsigned int src_pitch, unsigned char *dest, unsigned int dest_pitch, unsigned int dest_width);
++#define vp8_vertical_band_2_1_scale vp8_vertical_band_2_1_scale_c
++
++void vp8_vertical_band_2_1_scale_i_c(unsigned char *source, unsigned int src_pitch, unsigned char *dest, unsigned int dest_pitch, unsigned int dest_width);
++#define vp8_vertical_band_2_1_scale_i vp8_vertical_band_2_1_scale_i_c
++
++void vp8_vertical_band_5_3_scale_c(unsigned char *source, unsigned int src_pitch, unsigned char *dest, unsigned int dest_pitch, unsigned int dest_width);
++#define vp8_vertical_band_5_3_scale vp8_vertical_band_5_3_scale_c
++
++void vp8_vertical_band_5_4_scale_c(unsigned char *source, unsigned int src_pitch, unsigned char *dest, unsigned int dest_pitch, unsigned int dest_width);
++#define vp8_vertical_band_5_4_scale vp8_vertical_band_5_4_scale_c
++
++void vp8_yv12_copy_frame_c(const struct yv12_buffer_config *src_ybc, struct yv12_buffer_config *dst_ybc);
++#define vp8_yv12_copy_frame vp8_yv12_copy_frame_c
++
++void vp8_yv12_extend_frame_borders_c(struct yv12_buffer_config *ybf);
++#define vp8_yv12_extend_frame_borders vp8_yv12_extend_frame_borders_c
++
++void vpx_extend_frame_borders_c(struct yv12_buffer_config *ybf);
++#define vpx_extend_frame_borders vpx_extend_frame_borders_c
++
++void vpx_extend_frame_inner_borders_c(struct yv12_buffer_config *ybf);
++#define vpx_extend_frame_inner_borders vpx_extend_frame_inner_borders_c
++
++void vpx_yv12_copy_frame_c(const struct yv12_buffer_config *src_ybc, struct yv12_buffer_config *dst_ybc);
++#define vpx_yv12_copy_frame vpx_yv12_copy_frame_c
++
++void vpx_yv12_copy_y_c(const struct yv12_buffer_config *src_ybc, struct yv12_buffer_config *dst_ybc);
++#define vpx_yv12_copy_y vpx_yv12_copy_y_c
++
++void vpx_scale_rtcd(void);
++
++#include "vpx_config.h"
++
++#ifdef RTCD_C
++static void setup_rtcd_internal(void)
++{
++}
++#endif
++
++#ifdef __cplusplus
++}  // extern "C"
++#endif
++
++#endif  // VPX_SCALE_RTCD_H_
+diff --git a/media/libvpx/moz.build b/media/libvpx/moz.build
+index a9f90c8cd..12aa5214b 100644
+--- a/media/libvpx/moz.build
++++ b/media/libvpx/moz.build
+@@ -41,6 +41,13 @@ elif CONFIG['CPU_ARCH'] == 'x86':
+         ASFLAGS += [ '-I%s/media/libvpx/config/linux/ia32/' % TOPSRCDIR ]
+         CFLAGS += [ '-I%s/media/libvpx/config/linux/ia32/' % TOPSRCDIR ]
+ 
++elif CONFIG['CPU_ARCH'] == 'arm' and CONFIG['OS_TARGET'] == 'WINNT':
++    # Windows on ARM (retrofox): portable C, with Win32 threads instead of pthreads
++    EXPORTS.vpx += files['GENERIC_EXPORTS']
++    SOURCES += files['GENERIC_SOURCES']
++    ASFLAGS += [ '-I%s/media/libvpx/config/win/arm/' % TOPSRCDIR ]
++    CFLAGS += [ '-I%s/media/libvpx/config/win/arm/' % TOPSRCDIR ]
++
+ elif CONFIG['CPU_ARCH'] == 'arm':
+     EXPORTS.vpx += files['ARM_EXPORTS']
+     ASFLAGS += [
+diff --git a/memory/mozalloc/mozalloc.cpp b/memory/mozalloc/mozalloc.cpp
+index d5e2e3f54..fef21e239 100644
+--- a/memory/mozalloc/mozalloc.cpp
++++ b/memory/mozalloc/mozalloc.cpp
+@@ -194,7 +194,9 @@ moz_xvalloc(size_t size)
+ }
+ #endif // if defined(HAVE_VALLOC)
+ 
+-#ifndef MOZ_STATIC_RUNTIME
++// The static UCRT (VS 2015+) allocates from the shared process heap, so _msize is
++// valid across modules there too (retrofox links the CRT statically for the phone).
++#if !defined(MOZ_STATIC_RUNTIME) || defined(XP_WIN)
+ size_t
+ moz_malloc_usable_size(void *ptr)
+ {
+diff --git a/moz.configure b/moz.configure
+index eed4b87d5..2801be235 100644
+--- a/moz.configure
++++ b/moz.configure
+@@ -184,7 +184,7 @@ def makensis_progs(target):
+ 
+     return tuple(candidates)
+ 
+-nsis = check_prog('MAKENSISU', makensis_progs)
++nsis = check_prog('MAKENSISU', makensis_progs, allow_missing=True)
+ 
+ # Make sure the version of makensis is up to date.
+ @depends_if(nsis)
+diff --git a/mozglue/misc/TimeStamp_windows.cpp b/mozglue/misc/TimeStamp_windows.cpp
+index ceedbe885..33c329420 100644
+--- a/mozglue/misc/TimeStamp_windows.cpp
++++ b/mozglue/misc/TimeStamp_windows.cpp
+@@ -407,6 +407,10 @@ BaseTimeDurationPlatformUtils::ResolutionInTicks()
+ static bool
+ HasStableTSC()
+ {
++#if !defined(_M_IX86) && !defined(_M_X64)
++  // CPUID is x86-only; ARM (Windows Phone) has no TSC, so QPC is used as is
++  return false;
++#else
+   union
+   {
+     int regs[4];
+@@ -438,6 +442,7 @@ HasStableTSC()
+   // if bit 8 is set than TSC will run at a constant rate
+   // in all ACPI P-state, C-states and T-states
+   return regs[3] & (1 << 8);
++#endif
+ }
+ 
+ static bool gInitialized = false;
+diff --git a/old-configure.in b/old-configure.in
+index 0652d4e14..fedd3ac73 100644
+--- a/old-configure.in
++++ b/old-configure.in
+@@ -247,7 +247,8 @@ case "$target" in
+         # Check linker version
+         _LD_FULL_VERSION=`"${LD}" -v 2>&1 | sed -nre "$_MSVC_VER_FILTER"`
+         _LD_MAJOR_VERSION=`echo ${_LD_FULL_VERSION} | $AWK -F\. '{ print $1 }'`
+-        if test "$_LD_MAJOR_VERSION" != "$_CC_SUITE"; then
++        # lld-link (retrofox cross build) has no MSVC version banner
++        if test "$_LD_MAJOR_VERSION" != "$_CC_SUITE" && ! echo "${LD}" | grep -qi 'lld-link'; then
+             AC_MSG_ERROR([The linker major version, $_LD_FULL_VERSION,  does not match the compiler suite version, $_CC_SUITE.])
+         fi
+ 
+@@ -3019,7 +3020,12 @@ MOZ_D3DCOMPILER_VISTA_DLL_PATH=
+ if test "$COMPILE_ENVIRONMENT" ; then
+ case "$target_os" in
+ *mingw*)
+-    MOZ_ANGLE_RENDERER=1
++    # ANGLE and the D3D compiler DLLs are x86/x64 only (retrofox: Windows on ARM renders with Skia)
++    case "${target_cpu}" in
++    i*86|x86_64)
++        MOZ_ANGLE_RENDERER=1
++        ;;
++    esac
+     ;;
+ esac
+ 
+diff --git a/python/mozbuild/mozbuild/frontend/emitter.py b/python/mozbuild/mozbuild/frontend/emitter.py
+index 2d59d75be..cbdce883a 100644
+--- a/python/mozbuild/mozbuild/frontend/emitter.py
++++ b/python/mozbuild/mozbuild/frontend/emitter.py
+@@ -832,6 +832,10 @@ class TreeMetadataEmitter(LoggingMixin):
+                 not context.config.substs.get('GNU_CC')):
+             use_static_lib = (context.get('USE_STATIC_LIBS') and
+                               not context.config.substs.get('MOZ_ASAN'))
++            # retrofox: Windows Phone 8.1 has no UCRT/VCRUNTIME DLLs, so link the CRT
++            # statically everywhere
++            if os.environ.get('RETROFOX_STATIC_RTL'):
++                use_static_lib = True
+             rtl_flag = '-MT' if use_static_lib else '-MD'
+             if (context.config.substs.get('MOZ_DEBUG') and
+                     not context.config.substs.get('MOZ_NO_DEBUG_RTL')):
+diff --git a/security/nss/lib/freebl/freebl.gyp b/security/nss/lib/freebl/freebl.gyp
+index 23940ef77..ecc503883 100644
+--- a/security/nss/lib/freebl/freebl.gyp
++++ b/security/nss/lib/freebl/freebl.gyp
+@@ -933,11 +933,15 @@
+       }, {
+         'have_int128_support%': 0,
+       }],
+-      [ 'target_arch=="arm"', {
++      [ 'target_arch=="arm" and OS!="win"', {
+         # When the compiler uses the softfloat ABI, we want to use the compatible softfp ABI when enabling NEON for these objects.
+         # Confusingly, __SOFTFP__ is the name of the define for the softfloat ABI, not for the softfp ABI.
+         'softfp_cflags': '<!(${CC:-cc} -o - -E -dM - ${CFLAGS} < /dev/null | grep __SOFTFP__ > /dev/null && echo -mfloat-abi=softfp || true)',
+       }],
++      [ 'target_arch=="arm" and OS=="win"', {
++        # Windows on ARM is always hard-float (and gyp runs the probe above through cmd.exe there)
++        'softfp_cflags': '',
++      }],
+     ],
+   }
+ }
+diff --git a/toolkit/components/protobuf/src/google/protobuf/stubs/atomicops.h b/toolkit/components/protobuf/src/google/protobuf/stubs/atomicops.h
+index e6da1fce2..2c9cf3044 100644
+--- a/toolkit/components/protobuf/src/google/protobuf/stubs/atomicops.h
++++ b/toolkit/components/protobuf/src/google/protobuf/stubs/atomicops.h
+@@ -175,6 +175,9 @@ Atomic64 Release_Load(volatile const Atomic64* ptr);
+ #elif defined(_MSC_VER)
+ #if defined(GOOGLE_PROTOBUF_ARCH_IA32) || defined(GOOGLE_PROTOBUF_ARCH_X64)
+ #include <google/protobuf/stubs/atomicops_internals_x86_msvc.h>
++#elif defined(__clang__)
++// clang-cl on other architectures (e.g. Windows on ARM) has the __atomic builtins
++#include <google/protobuf/stubs/atomicops_internals_generic_gcc.h>
+ #else
+ GOOGLE_PROTOBUF_ATOMICOPS_ERROR
+ #endif
+diff --git a/toolkit/components/protobuf/src/google/protobuf/stubs/atomicops_internals_generic_gcc.h b/toolkit/components/protobuf/src/google/protobuf/stubs/atomicops_internals_generic_gcc.h
+index dd7abf6f1..ca9e4d72e 100644
+--- a/toolkit/components/protobuf/src/google/protobuf/stubs/atomicops_internals_generic_gcc.h
++++ b/toolkit/components/protobuf/src/google/protobuf/stubs/atomicops_internals_generic_gcc.h
+@@ -78,6 +78,10 @@ inline void NoBarrier_Store(volatile Atomic32* ptr, Atomic32 value) {
+   __atomic_store_n(ptr, value, __ATOMIC_RELAXED);
+ }
+ 
++#ifdef MemoryBarrier
++// Windows on ARM: WinNT.h defines MemoryBarrier as a macro
++#undef MemoryBarrier
++#endif
+ inline void MemoryBarrier() {
+   __sync_synchronize();
+ }
+diff --git a/toolkit/moz.configure b/toolkit/moz.configure
+index 5993671e4..84fb0f9d2 100644
+--- a/toolkit/moz.configure
++++ b/toolkit/moz.configure
+@@ -85,6 +85,23 @@ def toolkit(toolkit):
+ set_config('MOZ_WIDGET_TOOLKIT', toolkit)
+ add_old_configure_assignment('MOZ_WIDGET_TOOLKIT', toolkit)
+ 
++# retrofox: Windows Phone 8.1 has no Win32 windows. Keep the Windows platform code (gfx, xpcom,
++# netwerk) but swap widget/windows for an offscreen phone backend (widget/retrofox) and leave out
++# desktop-only features.
++option('--enable-windows-phone',
++       help='Build for Windows Phone 8.1 (retrofox): offscreen phone widget backend')
++
++@depends('--enable-windows-phone', toolkit)
++def windows_phone(value, toolkit):
++    if value:
++        if toolkit != 'windows':
++            die('--enable-windows-phone needs the Windows toolkit')
++        return True
++
++set_config('MOZ_WINDOWS_PHONE', windows_phone)
++set_define('MOZ_WINDOWS_PHONE', windows_phone)
++add_old_configure_assignment('MOZ_WINDOWS_PHONE', windows_phone)
++
+ @depends(toolkit)
+ def toolkit_gtk(toolkit):
+     if toolkit == 'gtk2':
+diff --git a/widget/moz.build b/widget/moz.build
+index 6b49e3527..adc2df6e5 100644
+--- a/widget/moz.build
++++ b/widget/moz.build
+@@ -12,7 +12,8 @@ if toolkit in ('gtk2', 'gtk3'):
+     EXPORTS += ['nsIPrintDialogService.h']
+ 
+ if toolkit == 'windows':
+-    DIRS += ['windows']
++    # retrofox: the phone has no Win32 windows; widget/retrofox draws offscreen
++    DIRS += ['retrofox' if CONFIG['MOZ_WINDOWS_PHONE'] else 'windows']
+ 
+     XPIDL_SOURCES += [
+         'nsIJumpListBuilder.idl',
+diff --git a/widget/retrofox/AudioSession.h b/widget/retrofox/AudioSession.h
+new file mode 100644
+index 000000000..bacbd9dd1
+--- /dev/null
++++ b/widget/retrofox/AudioSession.h
+@@ -0,0 +1,35 @@
++/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// Windows Phone (retrofox): same API as widget/windows/AudioSession.h, which shared XP_WIN code
++// calls. The phone has no desktop audio session (the hosting app owns audio), so these are no-ops.
++
++#ifndef mozilla_widget_AudioSession_h
++#define mozilla_widget_AudioSession_h
++
++#include "nsString.h"
++
++namespace mozilla {
++namespace widget {
++
++inline nsresult StartAudioSession() { return NS_OK; }
++
++inline nsresult GetAudioSessionData(nsID& aID, nsString& aSessionName, nsString& aIconPath)
++{
++  return NS_ERROR_NOT_IMPLEMENTED;
++}
++
++inline nsresult RecvAudioSessionData(const nsID& aID, const nsString& aSessionName,
++                                     const nsString& aIconPath)
++{
++  return NS_OK;
++}
++
++inline nsresult StopAudioSession() { return NS_OK; }
++
++} // namespace widget
++} // namespace mozilla
++
++#endif
+diff --git a/widget/retrofox/GfxInfo.cpp b/widget/retrofox/GfxInfo.cpp
+new file mode 100644
+index 000000000..3619aa414
+--- /dev/null
++++ b/widget/retrofox/GfxInfo.cpp
+@@ -0,0 +1,206 @@
++/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "GfxInfo.h"
++#include "nsServiceManagerUtils.h"
++
++namespace mozilla {
++namespace widget {
++
++
++#ifdef DEBUG
++NS_IMPL_ISUPPORTS_INHERITED(GfxInfo, GfxInfoBase, nsIGfxInfoDebug)
++#endif
++
++GfxInfo::GfxInfo()
++{
++}
++
++GfxInfo::~GfxInfo()
++{
++}
++
++nsresult
++GfxInfo::GetD2DEnabled(bool *aEnabled)
++{
++  return NS_ERROR_FAILURE;
++}
++
++nsresult
++GfxInfo::GetDWriteEnabled(bool *aEnabled)
++{
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetDWriteVersion(nsAString & aDwriteVersion)
++{
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetCleartypeParameters(nsAString & aCleartypeParams)
++{
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDescription(nsAString & aAdapterDescription)
++{
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDescription2(nsAString & aAdapterDescription)
++{
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterRAM(nsAString & aAdapterRAM)
++{
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterRAM2(nsAString & aAdapterRAM)
++{
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDriver(nsAString & aAdapterDriver)
++{
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDriver2(nsAString & aAdapterDriver)
++{
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDriverVersion(nsAString & aAdapterDriverVersion)
++{
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDriverVersion2(nsAString & aAdapterDriverVersion)
++{
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDriverDate(nsAString & aAdapterDriverDate)
++{
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDriverDate2(nsAString & aAdapterDriverDate)
++{
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterVendorID(nsAString & aAdapterVendorID)
++{
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterVendorID2(nsAString & aAdapterVendorID)
++{
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDeviceID(nsAString & aAdapterDeviceID)
++{
++  return NS_ERROR_FAILURE;
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterDeviceID2(nsAString & aAdapterDeviceID)
++{
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterSubsysID(nsAString & aAdapterSubsysID)
++{
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetAdapterSubsysID2(nsAString & aAdapterSubsysID)
++{
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP
++GfxInfo::GetIsGPU2Active(bool* aIsGPU2Active)
++{
++  return NS_ERROR_FAILURE;
++}
++
++const nsTArray<GfxDriverInfo>&
++GfxInfo::GetGfxDriverInfo()
++{
++  // No driver blocklist on the phone: GetFeatureStatusImpl decides everything
++  return *mDriverInfo;
++}
++
++nsresult
++GfxInfo::GetFeatureStatusImpl(int32_t aFeature,
++                              int32_t* aStatus,
++                              nsAString& aSuggestedDriverVersion,
++                              const nsTArray<GfxDriverInfo>& aDriverInfo,
++                              nsACString& aFailureId,
++                              OperatingSystem* aOS /* = nullptr */)
++{
++  NS_ENSURE_ARG_POINTER(aStatus);
++  aSuggestedDriverVersion.SetIsVoid(true);
++  if (aOS) {
++    *aOS = OperatingSystem::Unknown;
++  }
++
++  // Windows Phone 8.1 (retrofox): the engine renders offscreen with Skia on the CPU, so every
++  // GPU feature is off. (The Adreno 225 only offers D3D feature level 9_3 anyway.)
++  *aStatus = nsIGfxInfo::FEATURE_BLOCKED_DEVICE;
++  aFailureId.AssignLiteral("FEATURE_FAILURE_RETROFOX_SOFTWARE_ONLY");
++  return NS_OK;
++}
++#ifdef DEBUG
++
++// Implement nsIGfxInfoDebug
++
++NS_IMETHODIMP GfxInfo::SpoofVendorID(const nsAString & aVendorID)
++{
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP GfxInfo::SpoofDeviceID(const nsAString & aDeviceID)
++{
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP GfxInfo::SpoofDriverVersion(const nsAString & aDriverVersion)
++{
++  return NS_ERROR_FAILURE;
++}
++
++NS_IMETHODIMP GfxInfo::SpoofOSVersion(uint32_t aVersion)
++{
++  return NS_ERROR_FAILURE;
++}
++
++#endif
++
++}
++}
+diff --git a/widget/retrofox/GfxInfo.h b/widget/retrofox/GfxInfo.h
+new file mode 100644
+index 000000000..f8b36c692
+--- /dev/null
++++ b/widget/retrofox/GfxInfo.h
+@@ -0,0 +1,78 @@
++/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
++ *
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef __mozilla_widget_GfxInfo_h__
++#define __mozilla_widget_GfxInfo_h__
++
++#include "GfxInfoBase.h"
++#include "GfxDriverInfo.h"
++
++#include "nsString.h"
++#include "mozilla/UniquePtr.h"
++
++namespace mozilla {
++
++namespace gl {
++class GLContext;
++}
++
++namespace widget {
++
++class GfxInfo : public GfxInfoBase
++{
++private:
++  ~GfxInfo();
++
++public:
++  GfxInfo();
++
++  // We only declare the subset of nsIGfxInfo that we actually implement. The
++  // rest is brought forward from GfxInfoBase.
++  NS_IMETHOD GetD2DEnabled(bool *aD2DEnabled);
++  NS_IMETHOD GetDWriteEnabled(bool *aDWriteEnabled);
++  NS_IMETHOD GetDWriteVersion(nsAString & aDwriteVersion);
++  NS_IMETHOD GetCleartypeParameters(nsAString & aCleartypeParams);
++  NS_IMETHOD GetAdapterDescription(nsAString & aAdapterDescription);
++  NS_IMETHOD GetAdapterDriver(nsAString & aAdapterDriver);
++  NS_IMETHOD GetAdapterVendorID(nsAString & aAdapterVendorID);
++  NS_IMETHOD GetAdapterDeviceID(nsAString & aAdapterDeviceID);
++  NS_IMETHOD GetAdapterSubsysID(nsAString & aAdapterSubsysID);
++  NS_IMETHOD GetAdapterRAM(nsAString & aAdapterRAM);
++  NS_IMETHOD GetAdapterDriverVersion(nsAString & aAdapterDriverVersion);
++  NS_IMETHOD GetAdapterDriverDate(nsAString & aAdapterDriverDate);
++  NS_IMETHOD GetAdapterDescription2(nsAString & aAdapterDescription);
++  NS_IMETHOD GetAdapterDriver2(nsAString & aAdapterDriver);
++  NS_IMETHOD GetAdapterVendorID2(nsAString & aAdapterVendorID);
++  NS_IMETHOD GetAdapterDeviceID2(nsAString & aAdapterDeviceID);
++  NS_IMETHOD GetAdapterSubsysID2(nsAString & aAdapterSubsysID);
++  NS_IMETHOD GetAdapterRAM2(nsAString & aAdapterRAM);
++  NS_IMETHOD GetAdapterDriverVersion2(nsAString & aAdapterDriverVersion);
++  NS_IMETHOD GetAdapterDriverDate2(nsAString & aAdapterDriverDate);
++  NS_IMETHOD GetIsGPU2Active(bool *aIsGPU2Active);
++  using GfxInfoBase::GetFeatureStatus;
++  using GfxInfoBase::GetFeatureSuggestedDriverVersion;
++  using GfxInfoBase::GetWebGLParameter;
++
++#ifdef DEBUG
++  NS_DECL_ISUPPORTS_INHERITED
++  NS_DECL_NSIGFXINFODEBUG
++#endif
++
++protected:
++
++  virtual nsresult GetFeatureStatusImpl(int32_t aFeature,
++                                        int32_t *aStatus,
++                                        nsAString & aSuggestedDriverVersion,
++                                        const nsTArray<GfxDriverInfo>& aDriverInfo,
++                                        nsACString& aFailureId,
++                                        OperatingSystem* aOS = nullptr);
++  virtual const nsTArray<GfxDriverInfo>& GetGfxDriverInfo();
++};
++
++} // namespace widget
++} // namespace mozilla
++
++#endif /* __mozilla_widget_GfxInfo_h__ */
+diff --git a/widget/retrofox/RetrofoxFrame.h b/widget/retrofox/RetrofoxFrame.h
+new file mode 100644
+index 000000000..221409b2f
+--- /dev/null
++++ b/widget/retrofox/RetrofoxFrame.h
+@@ -0,0 +1,35 @@
++/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef mozilla_widget_RetrofoxFrame_h
++#define mozilla_widget_RetrofoxFrame_h
++
++#include <stdint.h>
++
++namespace mozilla {
++namespace widget {
++
++// The latest frame painted by the phone's top-level window (widget/retrofox), for the process
++// that shows it (screenshot tool, or the phone app over shared memory).
++struct RetrofoxFrame
++{
++  const uint8_t* mData;   // B8G8R8A8 (premultiplied), top-down
++  int32_t mWidth;
++  int32_t mHeight;
++  int32_t mStride;        // bytes per row
++  uint32_t mSerial;       // increments with every paint
++};
++
++// Main thread only. Returns false until something has been painted. mData stays valid until the
++// next paint or until the window is destroyed.
++bool GetRetrofoxFrame(RetrofoxFrame* aOut);
++
++// Paints the top-level window now if it's dirty (main thread). Returns true if it painted.
++bool PaintRetrofoxFrameNow();
++
++} // namespace widget
++} // namespace mozilla
++
++#endif
+diff --git a/widget/retrofox/moz.build b/widget/retrofox/moz.build
+new file mode 100644
+index 000000000..3c329dac3
+--- /dev/null
++++ b/widget/retrofox/moz.build
+@@ -0,0 +1,32 @@
++# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++
++# Windows Phone 8.1 widget backend (retrofox): top-level windows are offscreen Skia surfaces,
++# painted with the basic layer manager. A separate phone app shows the frames and sends input.
++# Modeled on widget/uikit.
++
++EXPORTS += [
++    'RetrofoxFrame.h',
++]
++
++# Same paths as widget/windows exports that shared XP_WIN code includes
++EXPORTS.mozilla.widget += [
++    'AudioSession.h',
++]
++
++SOURCES += [
++    'GfxInfo.cpp',
++    'nsAppShell.cpp',
++    'nsLookAndFeel.cpp',
++    'nsScreenManager.cpp',
++    'nsWidgetFactory.cpp',
++    'nsWindow.cpp',
++]
++
++FINAL_LIBRARY = 'xul'
++LOCAL_INCLUDES += [
++    '/layout/base',
++    '/widget',
++]
+diff --git a/widget/retrofox/nsAppShell.cpp b/widget/retrofox/nsAppShell.cpp
+new file mode 100644
+index 000000000..d8da7e935
+--- /dev/null
++++ b/widget/retrofox/nsAppShell.cpp
+@@ -0,0 +1,47 @@
++/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "nsAppShell.h"
++
++nsAppShell::nsAppShell()
++  : mWakeEvent(nullptr)
++{
++}
++
++nsAppShell::~nsAppShell()
++{
++  if (mWakeEvent) {
++    CloseHandle(mWakeEvent);
++  }
++}
++
++nsresult
++nsAppShell::Init()
++{
++  // Auto-reset: one wake per ScheduleNativeEventCallback
++  mWakeEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
++  if (!mWakeEvent) {
++    return NS_ERROR_FAILURE;
++  }
++  return nsBaseAppShell::Init();
++}
++
++void
++nsAppShell::ScheduleNativeEventCallback()
++{
++  // Called from any thread; NativeEventCallback() runs on the main thread when it wakes
++  SetEvent(mWakeEvent);
++}
++
++bool
++nsAppShell::ProcessNextNativeEvent(bool aMayWait)
++{
++  DWORD rv = WaitForSingleObject(mWakeEvent, aMayWait ? INFINITE : 0);
++  if (rv == WAIT_OBJECT_0) {
++    NativeEventCallback();
++    return true;
++  }
++  return false;
++}
+diff --git a/widget/retrofox/nsAppShell.h b/widget/retrofox/nsAppShell.h
+new file mode 100644
+index 000000000..8ce5c0df4
+--- /dev/null
++++ b/widget/retrofox/nsAppShell.h
+@@ -0,0 +1,31 @@
++/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef nsAppShell_h_
++#define nsAppShell_h_
++
++#include "nsBaseAppShell.h"
++
++#include <windows.h>
++
++// The phone engine has no Win32 windows and so no message queue: native "events" are just a
++// Win32 event that wakes the main thread when Gecko has work (ScheduleNativeEventCallback).
++class nsAppShell : public nsBaseAppShell
++{
++public:
++  nsAppShell();
++
++  nsresult Init();
++
++protected:
++  virtual ~nsAppShell();
++
++  virtual void ScheduleNativeEventCallback() override;
++  virtual bool ProcessNextNativeEvent(bool aMayWait) override;
++
++  HANDLE mWakeEvent;
++};
++
++#endif // nsAppShell_h_
+diff --git a/widget/retrofox/nsLookAndFeel.cpp b/widget/retrofox/nsLookAndFeel.cpp
+new file mode 100644
+index 000000000..326d9834d
+--- /dev/null
++++ b/widget/retrofox/nsLookAndFeel.cpp
+@@ -0,0 +1,188 @@
++/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "nsLookAndFeel.h"
++
++#include "gfxFont.h"
++#include "nsStyleConsts.h"
++
++// Windows Phone accent: cobalt
++#define RFX_ACCENT NS_RGB(0x00, 0x50, 0xEF)
++
++nsLookAndFeel::nsLookAndFeel() : nsXPLookAndFeel() {}
++
++nsLookAndFeel::~nsLookAndFeel() {}
++
++nsresult
++nsLookAndFeel::NativeGetColor(ColorID aID, nscolor& aResult)
++{
++  switch (aID) {
++    case eColorID_TextSelectBackground:
++    case eColorID_IMESelectedRawTextBackground:
++    case eColorID_IMESelectedConvertedTextBackground:
++    case eColorID_highlight:
++    case eColorID__moz_menuhover:
++    case eColorID__moz_html_cellhighlight:
++    case eColorID__moz_mac_focusring:
++    case eColorID__moz_nativehyperlinktext:
++      aResult = RFX_ACCENT;
++      break;
++    case eColorID_TextSelectForeground:
++    case eColorID_IMESelectedRawTextForeground:
++    case eColorID_IMESelectedConvertedTextForeground:
++    case eColorID_highlighttext:
++    case eColorID__moz_menuhovertext:
++    case eColorID__moz_html_cellhighlighttext:
++      aResult = NS_RGB(0xFF, 0xFF, 0xFF);
++      break;
++    case eColorID_WindowBackground:
++    case eColorID_TextBackground:
++    case eColorID_window:
++    case eColorID_background:
++    case eColorID__moz_field:
++    case eColorID__moz_combobox:
++    case eColorID__moz_dialog:
++    case eColorID_menu:
++    case eColorID_infobackground:
++    case eColorID_buttonhighlight:
++    case eColorID_threedhighlight:
++    case eColorID_threedlightshadow:
++      aResult = NS_RGB(0xFF, 0xFF, 0xFF);
++      break;
++    case eColorID_buttonface:
++    case eColorID_threedface:
++    case eColorID__moz_buttondefault:
++    case eColorID_scrollbar:
++    case eColorID_appworkspace:
++    case eColorID_inactiveborder:
++    case eColorID_inactivecaption:
++      aResult = NS_RGB(0xE6, 0xE6, 0xE6);
++      break;
++    case eColorID_buttonshadow:
++    case eColorID_threedshadow:
++    case eColorID_graytext:
++    case eColorID_inactivecaptiontext:
++      aResult = NS_RGB(0x99, 0x99, 0x99);
++      break;
++    case eColorID_threeddarkshadow:
++    case eColorID_activeborder:
++    case eColorID_windowframe:
++      aResult = NS_RGB(0x40, 0x40, 0x40);
++      break;
++    case eColorID_activecaption:
++      aResult = RFX_ACCENT;
++      break;
++    case eColorID_SpellCheckerUnderline:
++      aResult = NS_RGB(0xFF, 0x00, 0x00);
++      break;
++    default:
++      // Text colors and everything else: black on white
++      aResult = NS_RGB(0x00, 0x00, 0x00);
++      break;
++  }
++  return NS_OK;
++}
++
++nsresult
++nsLookAndFeel::GetIntImpl(IntID aID, int32_t& aResult)
++{
++  nsresult rv = nsXPLookAndFeel::GetIntImpl(aID, aResult);
++  if (NS_SUCCEEDED(rv)) {
++    return rv;
++  }
++  rv = NS_OK;
++  switch (aID) {
++    case eIntID_CaretBlinkTime:
++      aResult = 567;
++      break;
++    case eIntID_CaretWidth:
++      aResult = 2;
++      break;
++    case eIntID_ShowCaretDuringSelection:
++    case eIntID_SelectTextfieldsOnKeyFocus:
++    case eIntID_SubmenuDelay:
++    case eIntID_MenusCanOverlapOSBar:
++    case eIntID_ScrollArrowStyle:
++    case eIntID_ScrollSliderStyle:
++    case eIntID_TreeOpenDelay:
++    case eIntID_TreeCloseDelay:
++    case eIntID_TreeLazyScrollDelay:
++    case eIntID_TreeScrollDelay:
++    case eIntID_TreeScrollLinesMax:
++    case eIntID_TabFocusModel:
++      aResult = 0;
++      break;
++    case eIntID_DragThresholdX:
++    case eIntID_DragThresholdY:
++      aResult = 8;
++      break;
++    case eIntID_UseOverlayScrollbars:
++      aResult = 1;
++      break;
++    case eIntID_ScrollbarDisplayOnMouseMove:
++    case eIntID_AllowOverlayScrollbarsOverlap:
++      aResult = 1;
++      break;
++    case eIntID_ScrollbarFadeBeginDelay:
++      aResult = 450;
++      break;
++    case eIntID_ScrollbarFadeDuration:
++      aResult = 200;
++      break;
++    case eIntID_TouchEnabled:
++      aResult = 1;
++      break;
++    case eIntID_SpellCheckerUnderlineStyle:
++      aResult = NS_STYLE_TEXT_DECORATION_STYLE_WAVY;
++      break;
++    case eIntID_IMERawInputUnderlineStyle:
++    case eIntID_IMEConvertedTextUnderlineStyle:
++      aResult = NS_STYLE_TEXT_DECORATION_STYLE_SOLID;
++      break;
++    case eIntID_IMESelectedRawTextUnderlineStyle:
++    case eIntID_IMESelectedConvertedTextUnderline:
++      aResult = NS_STYLE_TEXT_DECORATION_STYLE_NONE;
++      break;
++    default:
++      aResult = 0;
++      rv = NS_ERROR_FAILURE;
++      break;
++  }
++  return rv;
++}
++
++nsresult
++nsLookAndFeel::GetFloatImpl(FloatID aID, float& aResult)
++{
++  nsresult rv = nsXPLookAndFeel::GetFloatImpl(aID, aResult);
++  if (NS_SUCCEEDED(rv)) {
++    return rv;
++  }
++  switch (aID) {
++    case eFloatID_IMEUnderlineRelativeSize:
++      aResult = 1.0f;
++      return NS_OK;
++    case eFloatID_SpellCheckerUnderlineRelativeSize:
++      aResult = 1.0f;
++      return NS_OK;
++    default:
++      aResult = -1.0f;
++      return NS_ERROR_FAILURE;
++  }
++}
++
++bool
++nsLookAndFeel::GetFontImpl(FontID aID, nsString& aFontName, gfxFontStyle& aFontStyle,
++                           float aDevPixPerCSSPixel)
++{
++  // Windows Phone's UI font
++  aFontName.AssignLiteral("Segoe WP");
++  aFontStyle.style = NS_FONT_STYLE_NORMAL;
++  aFontStyle.weight = NS_FONT_WEIGHT_NORMAL;
++  aFontStyle.stretch = NS_FONT_STRETCH_NORMAL;
++  aFontStyle.size = 15.0f * aDevPixPerCSSPixel;
++  aFontStyle.systemFont = true;
++  return true;
++}
+diff --git a/widget/retrofox/nsLookAndFeel.h b/widget/retrofox/nsLookAndFeel.h
+new file mode 100644
+index 000000000..a589e3d66
+--- /dev/null
++++ b/widget/retrofox/nsLookAndFeel.h
+@@ -0,0 +1,31 @@
++/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef __nsLookAndFeel
++#define __nsLookAndFeel
++
++#include "nsXPLookAndFeel.h"
++
++// Windows Phone 8.1 light theme defaults (no system theme API to query offscreen)
++class nsLookAndFeel : public nsXPLookAndFeel
++{
++public:
++  nsLookAndFeel();
++  virtual ~nsLookAndFeel();
++
++  virtual nsresult NativeGetColor(ColorID aID, nscolor& aResult) override;
++  virtual nsresult GetIntImpl(IntID aID, int32_t& aResult) override;
++  virtual nsresult GetFloatImpl(FloatID aID, float& aResult) override;
++  virtual bool GetFontImpl(FontID aID, nsString& aFontName, gfxFontStyle& aFontStyle,
++                           float aDevPixPerCSSPixel) override;
++  virtual char16_t GetPasswordCharacterImpl() override
++  {
++    return 0x2022;  // bullet
++  }
++
++  static bool UseOverlayScrollbars() { return true; }
++};
++
++#endif
+diff --git a/widget/retrofox/nsScreenManager.cpp b/widget/retrofox/nsScreenManager.cpp
+new file mode 100644
+index 000000000..5d880230f
+--- /dev/null
++++ b/widget/retrofox/nsScreenManager.cpp
+@@ -0,0 +1,137 @@
++/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "nsScreenManager.h"
++
++#include <stdio.h>
++#include <stdlib.h>
++
++using namespace mozilla;
++
++static LayoutDeviceIntRect gScreenBounds;
++static double gScreenScale = 1.5;
++static bool gScreenInited = false;
++
++static void
++InitScreen()
++{
++  if (gScreenInited) {
++    return;
++  }
++  gScreenInited = true;
++  // Lumia: 480x800 at 1.5 CSS scale (320x533 CSS px, like other 4.3" phones)
++  int w = 480, h = 800;
++  double scale = 1.5;
++  if (const char* env = getenv("RETROFOX_SCREEN")) {
++    sscanf(env, "%d,%d,%lf", &w, &h, &scale);
++  }
++  gScreenBounds = LayoutDeviceIntRect(0, 0, w, h);
++  gScreenScale = scale > 0 ? scale : 1.0;
++}
++
++LayoutDeviceIntRect
++RetrofoxScreenManager::GetBounds()
++{
++  InitScreen();
++  return gScreenBounds;
++}
++
++double
++RetrofoxScreenManager::GetScale()
++{
++  InitScreen();
++  return gScreenScale;
++}
++
++NS_IMETHODIMP
++RetrofoxScreen::GetRect(int32_t* aLeft, int32_t* aTop, int32_t* aWidth, int32_t* aHeight)
++{
++  LayoutDeviceIntRect r = RetrofoxScreenManager::GetBounds();
++  *aLeft = r.x;
++  *aTop = r.y;
++  *aWidth = r.width;
++  *aHeight = r.height;
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++RetrofoxScreen::GetAvailRect(int32_t* aLeft, int32_t* aTop, int32_t* aWidth, int32_t* aHeight)
++{
++  return GetRect(aLeft, aTop, aWidth, aHeight);
++}
++
++NS_IMETHODIMP
++RetrofoxScreen::GetPixelDepth(int32_t* aPixelDepth)
++{
++  *aPixelDepth = 24;
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++RetrofoxScreen::GetColorDepth(int32_t* aColorDepth)
++{
++  return GetPixelDepth(aColorDepth);
++}
++
++NS_IMETHODIMP
++RetrofoxScreen::GetContentsScaleFactor(double* aContentsScaleFactor)
++{
++  *aContentsScaleFactor = 1.0;
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++RetrofoxScreen::GetDefaultCSSScaleFactor(double* aScaleFactor)
++{
++  *aScaleFactor = RetrofoxScreenManager::GetScale();
++  return NS_OK;
++}
++
++NS_IMPL_ISUPPORTS(RetrofoxScreenManager, nsIScreenManager)
++
++RetrofoxScreenManager::RetrofoxScreenManager()
++  : mScreen(new RetrofoxScreen())
++{
++}
++
++NS_IMETHODIMP
++RetrofoxScreenManager::GetPrimaryScreen(nsIScreen** aOutScreen)
++{
++  NS_IF_ADDREF(*aOutScreen = mScreen.get());
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++RetrofoxScreenManager::ScreenForRect(int32_t aLeft, int32_t aTop, int32_t aWidth, int32_t aHeight,
++                                     nsIScreen** aOutScreen)
++{
++  return GetPrimaryScreen(aOutScreen);
++}
++
++NS_IMETHODIMP
++RetrofoxScreenManager::ScreenForId(uint32_t aId, nsIScreen** aOutScreen)
++{
++  return GetPrimaryScreen(aOutScreen);
++}
++
++NS_IMETHODIMP
++RetrofoxScreenManager::ScreenForNativeWidget(void* aWidget, nsIScreen** aOutScreen)
++{
++  return GetPrimaryScreen(aOutScreen);
++}
++
++NS_IMETHODIMP
++RetrofoxScreenManager::GetNumberOfScreens(uint32_t* aNumberOfScreens)
++{
++  *aNumberOfScreens = 1;
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++RetrofoxScreenManager::GetSystemDefaultScale(float* aScale)
++{
++  *aScale = 1.0f;
++  return NS_OK;
++}
+diff --git a/widget/retrofox/nsScreenManager.h b/widget/retrofox/nsScreenManager.h
+new file mode 100644
+index 000000000..62f0cebb7
+--- /dev/null
++++ b/widget/retrofox/nsScreenManager.h
+@@ -0,0 +1,50 @@
++/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef nsScreenManager_h_
++#define nsScreenManager_h_
++
++#include "nsBaseScreen.h"
++#include "nsIScreenManager.h"
++#include "nsCOMPtr.h"
++#include "Units.h"
++
++// One fixed phone screen. Size and scale can be overridden with the RETROFOX_SCREEN environment
++// variable ("width,height,scale", e.g. "480,800,1.5" for a Lumia).
++class RetrofoxScreen : public nsBaseScreen
++{
++public:
++  RetrofoxScreen() {}
++
++  NS_IMETHOD GetId(uint32_t* aOutId) override { *aOutId = 0; return NS_OK; }
++  NS_IMETHOD GetRect(int32_t* aLeft, int32_t* aTop, int32_t* aWidth, int32_t* aHeight) override;
++  NS_IMETHOD GetAvailRect(int32_t* aLeft, int32_t* aTop, int32_t* aWidth, int32_t* aHeight) override;
++  NS_IMETHOD GetPixelDepth(int32_t* aPixelDepth) override;
++  NS_IMETHOD GetColorDepth(int32_t* aColorDepth) override;
++  NS_IMETHOD GetContentsScaleFactor(double* aContentsScaleFactor) override;
++  NS_IMETHOD GetDefaultCSSScaleFactor(double* aScaleFactor) override;
++
++private:
++  ~RetrofoxScreen() {}
++};
++
++class RetrofoxScreenManager : public nsIScreenManager
++{
++public:
++  RetrofoxScreenManager();
++
++  NS_DECL_ISUPPORTS
++  NS_DECL_NSISCREENMANAGER
++
++  // Screen size in device pixels, and CSS-to-device scale
++  static mozilla::LayoutDeviceIntRect GetBounds();
++  static double GetScale();
++
++private:
++  virtual ~RetrofoxScreenManager() {}
++  nsCOMPtr<nsIScreen> mScreen;
++};
++
++#endif // nsScreenManager_h_
+diff --git a/widget/retrofox/nsWidgetFactory.cpp b/widget/retrofox/nsWidgetFactory.cpp
+new file mode 100644
+index 000000000..e4160970d
+--- /dev/null
++++ b/widget/retrofox/nsWidgetFactory.cpp
+@@ -0,0 +1,70 @@
++/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "nsIFactory.h"
++#include "nsISupports.h"
++#include "nsIComponentManager.h"
++#include "mozilla/ModuleUtils.h"
++
++#include "nsWidgetsCID.h"
++
++#include "nsAppShell.h"
++#include "nsAppShellSingleton.h"
++#include "nsLookAndFeel.h"
++#include "nsScreenManager.h"
++#include "nsWindow.h"
++#include "GfxInfo.h"
++
++NS_GENERIC_FACTORY_CONSTRUCTOR(RetrofoxScreenManager)
++NS_GENERIC_FACTORY_CONSTRUCTOR(nsWindow)
++
++namespace mozilla {
++namespace widget {
++NS_GENERIC_FACTORY_CONSTRUCTOR_INIT(GfxInfo, Init)
++}
++}
++
++NS_DEFINE_NAMED_CID(NS_WINDOW_CID);
++NS_DEFINE_NAMED_CID(NS_CHILD_CID);
++NS_DEFINE_NAMED_CID(NS_APPSHELL_CID);
++NS_DEFINE_NAMED_CID(NS_SCREENMANAGER_CID);
++NS_DEFINE_NAMED_CID(NS_GFXINFO_CID);
++
++static const mozilla::Module::CIDEntry kWidgetCIDs[] = {
++  { &kNS_WINDOW_CID, false, nullptr, nsWindowConstructor },
++  { &kNS_CHILD_CID, false, nullptr, nsWindowConstructor },
++  { &kNS_APPSHELL_CID, false, nullptr, nsAppShellConstructor },
++  { &kNS_SCREENMANAGER_CID, false, nullptr, RetrofoxScreenManagerConstructor },
++  { &kNS_GFXINFO_CID, false, nullptr, mozilla::widget::GfxInfoConstructor },
++  { nullptr }
++};
++
++static const mozilla::Module::ContractIDEntry kWidgetContracts[] = {
++  { "@mozilla.org/widgets/window/win;1", &kNS_WINDOW_CID },
++  { "@mozilla.org/widgets/child_window/win;1", &kNS_CHILD_CID },
++  { "@mozilla.org/widget/appshell/win;1", &kNS_APPSHELL_CID },
++  { "@mozilla.org/gfx/screenmanager;1", &kNS_SCREENMANAGER_CID },
++  { "@mozilla.org/gfx/info;1", &kNS_GFXINFO_CID },
++  { nullptr }
++};
++
++static void
++nsWidgetRetrofoxModuleDtor()
++{
++  nsLookAndFeel::Shutdown();
++  nsAppShellShutdown();
++}
++
++static const mozilla::Module kWidgetModule = {
++  mozilla::Module::kVersion,
++  kWidgetCIDs,
++  kWidgetContracts,
++  nullptr,
++  nullptr,
++  nsAppShellInit,
++  nsWidgetRetrofoxModuleDtor
++};
++
++NSMODULE_DEFN(nsWidgetModule) = &kWidgetModule;
+diff --git a/widget/retrofox/nsWindow.cpp b/widget/retrofox/nsWindow.cpp
+new file mode 100644
+index 000000000..5181b0feb
+--- /dev/null
++++ b/widget/retrofox/nsWindow.cpp
+@@ -0,0 +1,361 @@
++/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "nsWindow.h"
++
++#include "gfxContext.h"
++#include "mozilla/BasicEvents.h"
++#include "mozilla/gfx/2D.h"
++#include "mozilla/layers/LayersTypes.h"
++#include "nsIWidgetListener.h"
++#include "nsScreenManager.h"
++#include "nsThreadUtils.h"
++#include "RetrofoxFrame.h"
++
++using namespace mozilla;
++using namespace mozilla::gfx;
++using namespace mozilla::layers;
++using namespace mozilla::widget;
++
++nsWindow* nsWindow::sTopLevel = nullptr;
++
++NS_IMPL_ISUPPORTS_INHERITED0(nsWindow, Inherited)
++
++nsWindow::nsWindow()
++  : mVisible(false)
++  , mDirty(false)
++  , mPaintPending(false)
++  , mFrameSerial(0)
++  , mParent(nullptr)
++{
++}
++
++nsWindow::~nsWindow()
++{
++  if (sTopLevel == this) {
++    sTopLevel = nullptr;
++  }
++}
++
++bool
++nsWindow::IsTopLevel()
++{
++  return mWindowType == eWindowType_toplevel ||
++         mWindowType == eWindowType_dialog ||
++         mWindowType == eWindowType_invisible;
++}
++
++nsWindow*
++nsWindow::FindTopLevel()
++{
++  nsWindow* w = this;
++  while (w->mParent) {
++    w = w->mParent;
++  }
++  return w;
++}
++
++nsresult
++nsWindow::Create(nsIWidget* aParent,
++                 nsNativeWidget aNativeParent,
++                 const LayoutDeviceIntRect& aRect,
++                 nsWidgetInitData* aInitData)
++{
++  nsWindow* parent = static_cast<nsWindow*>(aParent);
++
++  // Top-level windows always fill the phone screen
++  mBounds = parent ? aRect : RetrofoxScreenManager::GetBounds();
++
++  mWindowType = eWindowType_toplevel;
++  mBorderStyle = eBorderStyle_default;
++  Inherited::BaseCreate(aParent, aInitData);
++
++  if (parent) {
++    parent->mChildren.AppendElement(this);
++    mParent = parent;
++  }
++  return NS_OK;
++}
++
++void
++nsWindow::Destroy()
++{
++  for (uint32_t i = 0; i < mChildren.Length(); ++i) {
++    mChildren[i]->mParent = nullptr;
++  }
++  mChildren.Clear();
++  if (mParent) {
++    mParent->mChildren.RemoveElement(this);
++    mParent = nullptr;
++  }
++  if (sTopLevel == this) {
++    sTopLevel = nullptr;
++  }
++  mFrame = nullptr;
++
++  nsBaseWidget::Destroy();
++  nsBaseWidget::OnDestroy();
++}
++
++nsresult
++nsWindow::ConfigureChildren(const nsTArray<nsIWidget::Configuration>& aConfig)
++{
++  for (uint32_t i = 0; i < aConfig.Length(); ++i) {
++    nsWindow* child = static_cast<nsWindow*>(aConfig[i].mChild.get());
++    child->Resize(aConfig[i].mBounds.x, aConfig[i].mBounds.y,
++                  aConfig[i].mBounds.width, aConfig[i].mBounds.height, false);
++  }
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++nsWindow::Show(bool aState)
++{
++  if (aState != mVisible) {
++    mVisible = aState;
++    if (aState) {
++      if (IsTopLevel() && !mParent) {
++        sTopLevel = this;
++      }
++      mDirty = true;
++      ScheduleTopLevelPaint();
++    }
++  }
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++nsWindow::Move(double aX, double aY)
++{
++  if (mBounds.x == aX && mBounds.y == aY) {
++    return NS_OK;
++  }
++  mBounds.x = aX;
++  mBounds.y = aY;
++  ReportMoveEvent();
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++nsWindow::Resize(double aX, double aY, double aWidth, double aHeight, bool aRepaint)
++{
++  bool moving = mBounds.x != aX || mBounds.y != aY;
++  bool resizing = mBounds.width != aWidth || mBounds.height != aHeight;
++  if (!moving && !resizing) {
++    return NS_OK;
++  }
++  mBounds.x = aX;
++  mBounds.y = aY;
++  mBounds.width = aWidth;
++  mBounds.height = aHeight;
++  if (moving) {
++    ReportMoveEvent();
++  }
++  if (resizing) {
++    ReportSizeEvent();
++  }
++  if (aRepaint) {
++    Invalidate(mBounds);
++  }
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++nsWindow::Resize(double aWidth, double aHeight, bool aRepaint)
++{
++  return Resize(mBounds.x, mBounds.y, aWidth, aHeight, aRepaint);
++}
++
++void
++nsWindow::SetSizeMode(nsSizeMode aMode)
++{
++  if (aMode == mSizeMode) {
++    return;
++  }
++  mSizeMode = aMode;
++  ReportSizeModeEvent(aMode);
++}
++
++double
++nsWindow::GetDefaultScaleInternal()
++{
++  return RetrofoxScreenManager::GetScale();
++}
++
++LayoutDeviceIntRect
++nsWindow::GetScreenBounds()
++{
++  return LayoutDeviceIntRect(WidgetToScreenOffset(), mBounds.Size());
++}
++
++LayoutDeviceIntPoint
++nsWindow::WidgetToScreenOffset()
++{
++  LayoutDeviceIntPoint offset(mBounds.x, mBounds.y);
++  if (mParent) {
++    offset += mParent->WidgetToScreenOffset();
++  }
++  return offset;
++}
++
++NS_IMETHODIMP
++nsWindow::Invalidate(const LayoutDeviceIntRect& aRect)
++{
++  nsWindow* top = FindTopLevel();
++  top->mDirty = true;
++  top->ScheduleTopLevelPaint();
++  return NS_OK;
++}
++
++void
++nsWindow::ScheduleTopLevelPaint()
++{
++  if (mPaintPending || !mVisible) {
++    return;
++  }
++  mPaintPending = true;
++  RefPtr<nsWindow> self = this;
++  NS_DispatchToMainThread(NS_NewRunnableFunction([self]() {
++    self->mPaintPending = false;
++    self->PaintIfDirty();
++  }));
++}
++
++bool
++nsWindow::PaintIfDirty()
++{
++  if (!mDirty || !mVisible || !mWidgetListener || mBounds.IsEmpty()) {
++    return false;
++  }
++  mDirty = false;
++
++  IntSize size(mBounds.width, mBounds.height);
++  if (!mFrame || mFrame->GetSize() != size) {
++    mFrame = Factory::CreateDrawTarget(BackendType::SKIA, size, SurfaceFormat::B8G8R8A8);
++    if (!mFrame) {
++      return false;
++    }
++  }
++
++  mWidgetListener->WillPaintWindow(this);
++  if (!mWidgetListener) {
++    return false;
++  }
++
++  bool painted = false;
++  {
++    RefPtr<gfxContext> ctx = gfxContext::CreateOrNull(mFrame);
++    if (!ctx) {
++      return false;
++    }
++    AutoLayerManagerSetup setup(this, ctx, BufferMode::BUFFER_NONE);
++    LayoutDeviceIntRegion region(LayoutDeviceIntRect(0, 0, mBounds.width, mBounds.height));
++    painted = mWidgetListener->PaintWindow(this, region);
++  }
++  mFrame->Flush();
++  if (mWidgetListener) {
++    mWidgetListener->DidPaintWindow();
++  }
++  ++mFrameSerial;
++  return painted;
++}
++
++void
++nsWindow::ReportMoveEvent()
++{
++  NotifyWindowMoved(mBounds.x, mBounds.y);
++}
++
++void
++nsWindow::ReportSizeModeEvent(nsSizeMode aMode)
++{
++  if (mWidgetListener) {
++    mWidgetListener->SizeModeChanged(aMode);
++  }
++}
++
++void
++nsWindow::ReportSizeEvent()
++{
++  if (mWidgetListener) {
++    LayoutDeviceIntRect inner = GetClientBounds();
++    mWidgetListener->WindowResized(this, inner.width, inner.height);
++  }
++}
++
++NS_IMETHODIMP
++nsWindow::DispatchEvent(WidgetGUIEvent* aEvent, nsEventStatus& aStatus)
++{
++  aStatus = nsEventStatus_eIgnore;
++  nsCOMPtr<nsIWidget> kungFuDeathGrip(aEvent->mWidget);
++  if (mWidgetListener) {
++    aStatus = mWidgetListener->HandleEvent(aEvent, mUseAttachedEvents);
++  }
++  return NS_OK;
++}
++
++NS_IMETHODIMP_(void)
++nsWindow::SetInputContext(const InputContext& aContext, const InputContextAction& aAction)
++{
++  // TODO: ask the phone app to show the software keyboard
++  mInputContext = aContext;
++}
++
++NS_IMETHODIMP_(InputContext)
++nsWindow::GetInputContext()
++{
++  return mInputContext;
++}
++
++void*
++nsWindow::GetNativeData(uint32_t aDataType)
++{
++  switch (aDataType) {
++    case NS_RAW_NATIVE_IME_CONTEXT: {
++      void* ctx = GetPseudoIMEContext();
++      return ctx ? ctx : NS_ONLY_ONE_NATIVE_IME_CONTEXT;
++    }
++    default:
++      // There is no native window, display or graphics context
++      return nullptr;
++  }
++}
++
++namespace mozilla {
++namespace widget {
++
++bool
++GetRetrofoxFrame(RetrofoxFrame* aOut)
++{
++  nsWindow* top = nsWindow::TopLevel();
++  if (!top || !top->FrameTarget()) {
++    return false;
++  }
++  uint8_t* data = nullptr;
++  IntSize size;
++  int32_t stride = 0;
++  SurfaceFormat format;
++  if (!top->FrameTarget()->LockBits(&data, &size, &stride, &format)) {
++    return false;
++  }
++  // Skia keeps the pixels in place; unlock right away and hand out the pointer
++  top->FrameTarget()->ReleaseBits(data);
++  aOut->mData = data;
++  aOut->mWidth = size.width;
++  aOut->mHeight = size.height;
++  aOut->mStride = stride;
++  aOut->mSerial = top->FrameSerial();
++  return true;
++}
++
++bool
++PaintRetrofoxFrameNow()
++{
++  nsWindow* top = nsWindow::TopLevel();
++  return top && top->PaintIfDirty();
++}
++
++} // namespace widget
++} // namespace mozilla
+diff --git a/widget/retrofox/nsWindow.h b/widget/retrofox/nsWindow.h
+new file mode 100644
+index 000000000..115eaff35
+--- /dev/null
++++ b/widget/retrofox/nsWindow.h
+@@ -0,0 +1,92 @@
++/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef NSWINDOW_H_
++#define NSWINDOW_H_
++
++#include "nsBaseWidget.h"
++#include "nsTArray.h"
++#include "mozilla/RefPtr.h"
++#include "mozilla/gfx/2D.h"
++
++// Windows Phone widget (retrofox): no native window at all. A top-level window owns an
++// offscreen Skia surface; child windows paint through their top-level ancestor. Paints use the
++// basic layer manager on the main thread (no off-main-thread compositing).
++class nsWindow : public nsBaseWidget
++{
++  typedef nsBaseWidget Inherited;
++
++public:
++  nsWindow();
++
++  NS_DECL_ISUPPORTS_INHERITED
++
++  // nsIWidget
++  [[nodiscard]] virtual nsresult Create(nsIWidget* aParent,
++                                        nsNativeWidget aNativeParent,
++                                        const LayoutDeviceIntRect& aRect,
++                                        nsWidgetInitData* aInitData = nullptr) override;
++  virtual void Destroy() override;
++  NS_IMETHOD Show(bool aState) override;
++  NS_IMETHOD Enable(bool aState) override { return NS_OK; }
++  virtual bool IsEnabled() const override { return true; }
++  virtual bool IsVisible() const override { return mVisible; }
++  NS_IMETHOD SetFocus(bool aRaise = false) override { return NS_OK; }
++  virtual LayoutDeviceIntPoint WidgetToScreenOffset() override;
++
++  virtual void SetBackgroundColor(const nscolor& aColor) override {}
++  virtual void* GetNativeData(uint32_t aDataType) override;
++
++  NS_IMETHOD Move(double aX, double aY) override;
++  virtual void SetSizeMode(nsSizeMode aMode) override;
++  NS_IMETHOD Resize(double aWidth, double aHeight, bool aRepaint) override;
++  NS_IMETHOD Resize(double aX, double aY, double aWidth, double aHeight, bool aRepaint) override;
++  virtual LayoutDeviceIntRect GetScreenBounds() override;
++
++  virtual float GetDPI() override { return 217.0f; }  // Lumia: 4.3", 480x800
++  virtual double GetDefaultScaleInternal() override;
++
++  NS_IMETHOD SetTitle(const nsAString& aTitle) override { return NS_OK; }
++
++  NS_IMETHOD Invalidate(const LayoutDeviceIntRect& aRect) override;
++  virtual nsresult ConfigureChildren(const nsTArray<Configuration>& aConfigurations) override;
++  NS_IMETHOD DispatchEvent(mozilla::WidgetGUIEvent* aEvent, nsEventStatus& aStatus) override;
++
++  NS_IMETHOD_(void) SetInputContext(const InputContext& aContext,
++                                    const InputContextAction& aAction) override;
++  NS_IMETHOD_(InputContext) GetInputContext() override;
++
++  virtual bool ShouldUseOffMainThreadCompositing() override { return false; }
++
++  // Paints this top-level window into its surface if it's dirty. Returns true if it painted.
++  bool PaintIfDirty();
++  mozilla::gfx::DrawTarget* FrameTarget() const { return mFrame; }
++  uint32_t FrameSerial() const { return mFrameSerial; }
++
++  static nsWindow* TopLevel() { return sTopLevel; }
++
++protected:
++  virtual ~nsWindow();
++
++  bool IsTopLevel();
++  nsWindow* FindTopLevel();
++  void ScheduleTopLevelPaint();
++  void ReportMoveEvent();
++  void ReportSizeEvent();
++  void ReportSizeModeEvent(nsSizeMode aMode);
++
++  bool mVisible;
++  bool mDirty;
++  bool mPaintPending;
++  uint32_t mFrameSerial;
++  nsTArray<nsWindow*> mChildren;
++  nsWindow* mParent;
++  InputContext mInputContext;
++  RefPtr<mozilla::gfx::DrawTarget> mFrame;
++
++  static nsWindow* sTopLevel;  // the most recently shown top-level window
++};
++
++#endif /* NSWINDOW_H_ */
+diff --git a/xpcom/base/nscore.h b/xpcom/base/nscore.h
+index 6300099ef..76c451e82 100644
+--- a/xpcom/base/nscore.h
++++ b/xpcom/base/nscore.h
+@@ -96,8 +96,8 @@
+ #define NS_IMETHODIMP_(type) type __stdcall
+ #define NS_METHOD_(type) type __stdcall
+ #define NS_CALLBACK_(_type, _name) _type (__stdcall * _name)
+-#ifndef _WIN64
+-// Win64 has only one calling convention.  __stdcall will be ignored by the compiler.
++#if !defined(_WIN64) && !defined(_M_ARM)
++// Win64 and Windows on ARM have only one calling convention.  __stdcall will be ignored by the compiler.
+ #define NS_STDCALL __stdcall
+ #define NS_HAVE_STDCALL
+ #else
+diff --git a/xpcom/build/nsWindowsDllInterceptor.h b/xpcom/build/nsWindowsDllInterceptor.h
+index 832451796..44aa78131 100644
+--- a/xpcom/build/nsWindowsDllInterceptor.h
++++ b/xpcom/build/nsWindowsDllInterceptor.h
+@@ -69,6 +69,24 @@
+ 
+ #include <stdint.h>
+ 
++#if defined(_M_ARM)
++
++namespace mozilla {
++
++// Windows on ARM: no x86/x64 prologue patching, so hooks are never installed. Callers already
++// handle AddHook() returning false (the feature that wanted the hook just stays off).
++class WindowsDllInterceptor
++{
++public:
++  void Init(const char* aModuleName, int aNumHooks = 0) {}
++  bool AddHook(const char* aName, intptr_t aHookDest, void** aOrigFunc) { return false; }
++  bool AddDetour(const char* aName, intptr_t aHookDest, void** aOrigFunc) { return false; }
++};
++
++} // namespace mozilla
++
++#else
++
+ namespace mozilla {
+ namespace internal {
+ 
+@@ -1123,4 +1141,6 @@ public:
+ 
+ } // namespace mozilla
+ 
++#endif /* _M_ARM */
++
+ #endif /* NS_WINDOWS_DLL_INTERCEPTOR_H_ */
+diff --git a/xpcom/reflect/xptcall/md/win32/moz.build b/xpcom/reflect/xptcall/md/win32/moz.build
+index 8807bc09f..d3c571c02 100644
+--- a/xpcom/reflect/xptcall/md/win32/moz.build
++++ b/xpcom/reflect/xptcall/md/win32/moz.build
+@@ -21,6 +21,10 @@ if CONFIG['TARGET_CPU'] == 'x86_64':
+             'xptcinvoke_asm_x86_64.asm',
+             'xptcstubs_asm_x86_64.asm'
+         ]
++elif CONFIG['TARGET_CPU'] == 'arm':
++    # Windows on ARM (retrofox): the AAPCS-VFP invoke/stubs port isn't written yet, so
++    # NS_InvokeByIndex and the nsXPTCStubBase stubs are deliberately missing at link time.
++    pass
+ else:
+     if CONFIG['GNU_CXX']:
+         SOURCES += [

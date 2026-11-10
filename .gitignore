@@ -1,0 +1,31 @@
+# Mozilla source checkouts / tarballs (fetched by scripts/)
+/mozilla/
+*.tar.xz
+*.tar.gz
+
+# Build output
+/build/
+/obj-*/
+/dist/
+
+# Toolchains and caches
+/.mozbuild/
+/toolchains/
+
+# Editor / OS
+.vs/
+*.swp
+Thumbs.db
+desktop.ini
+
+# Local CA created on the phone by rfxproxy: never commit the key
+rfx-ca.key
+rfx-ca.cer
+*.key
+
+# VS 2015 app build output
+viewer/app/**/bin/
+viewer/app/**/obj/
+viewer/app/**/AppPackages/
+viewer/app/**/BundleArtifacts/
+*.csproj.user

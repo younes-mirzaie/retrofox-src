@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<!-- What the engine says about the media formats YouTube asks for (MediaSource.isTypeSupported and
+     canPlayType). Open it in Retrofox; each line also goes to the engine log through dump(). -->
+<html><head><meta name="viewport" content="width=device-width"><title>media probe</title>
+<style>body{font:16px sans-serif;margin:12px} .y{color:#080} .n{color:#c00}</style></head>
+<body><h3>Retrofox media probe</h3><div id="out"></div>
+<script>
+var types = [
+  'video/webm; codecs="vp9"', 'video/webm; codecs="vp09.00.10.08"', 'video/webm; codecs="vp8"',
+  'audio/webm; codecs="opus"', 'audio/webm; codecs="vorbis"',
+  'video/mp4; codecs="avc1.4d401e"', 'video/mp4; codecs="avc1.42001E"',
+  'audio/mp4; codecs="mp4a.40.2"', 'video/mp4; codecs="av01.0.05M.08"'
+];
+var out = document.getElementById('out');
+function line(t, ok) {
+  var d = document.createElement('div'); d.className = ok ? 'y' : 'n'; d.textContent = t; out.appendChild(d);
+  if (window.dump) dump('media-probe: ' + t + '\n');
+}
+line('MediaSource: ' + (typeof MediaSource), typeof MediaSource !== 'undefined');
+var v = document.createElement('video');
+types.forEach(function (t) {
+  var mse = typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported(t);
+  line((mse ? 'MSE yes ' : 'MSE no  ') + '| canPlayType "' + v.canPlayType(t) + '" | ' + t, mse);
+});
+line('UA: ' + navigator.userAgent, true);
+</script></body></html>

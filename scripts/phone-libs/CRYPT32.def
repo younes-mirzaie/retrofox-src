@@ -1,0 +1,10 @@
+; Functions the phone's CRYPT32.DLL exports that WindowsPhoneCore.lib doesn't expose.
+; Verified on the Lumia with phone\probe\probe.exe. Merged into build\lib\kernel32.lib.
+LIBRARY CRYPT32.DLL
+EXPORTS
+    CertCloseStore
+    CertFindCertificateInStore
+    CertFreeCertificateChain
+    CertGetCertificateChain
+    CertOpenStore
+    CertOpenSystemStoreW

@@ -1,0 +1,357 @@
+diff --git a/widget/retrofox/RetrofoxFrame.h b/widget/retrofox/RetrofoxFrame.h
+index 221409b..e887c2b 100644
+--- a/widget/retrofox/RetrofoxFrame.h
++++ b/widget/retrofox/RetrofoxFrame.h
+@@ -20,6 +20,9 @@ struct RetrofoxFrame
+   int32_t mHeight;
+   int32_t mStride;        // bytes per row
+   uint32_t mSerial;       // increments with every paint
++  // Part of the frame that changed in the last paint (device pixels). Everything outside it is
++  // the same as in the previous frame, so the phone app only needs this rectangle.
++  int32_t mDirtyX, mDirtyY, mDirtyWidth, mDirtyHeight;
+ };
+ 
+ // Main thread only. Returns false until something has been painted. mData stays valid until the
+@@ -29,6 +32,22 @@ bool GetRetrofoxFrame(RetrofoxFrame* aOut);
+ // Paints the top-level window now if it's dirty (main thread). Returns true if it painted.
+ bool PaintRetrofoxFrameNow();
+ 
++// Input from the phone app, in device pixels of the top-level window (main thread). Each goes to
++// the innermost visible child window under the point (the page's content widget).
++enum RetrofoxPointerAction { eRetrofoxPointerDown, eRetrofoxPointerMove, eRetrofoxPointerUp };
++void DispatchRetrofoxPointer(RetrofoxPointerAction aAction, int32_t aX, int32_t aY);
++// Scrolls by (aDX, aDY) device pixels at the last pointer position; positive aDY scrolls down.
++void DispatchRetrofoxScroll(int32_t aDX, int32_t aDY);
++// A Windows virtual-key code (VK_BACK, VK_RETURN, ...): keydown, keypress, keyup.
++void DispatchRetrofoxKey(uint32_t aVirtualKey);
++// Typed text (UTF-16), one keypress per character.
++void DispatchRetrofoxText(const char16_t* aText, uint32_t aLength);
++
++// Called (main thread) when a text field gains or loses focus, so the app can show or hide the
++// software keyboard.
++typedef void (*RetrofoxTextFocusCallback)(bool aFocused);
++void SetRetrofoxTextFocusCallback(RetrofoxTextFocusCallback aCallback);
++
+ } // namespace widget
+ } // namespace mozilla
+ 
+diff --git a/widget/retrofox/nsWindow.cpp b/widget/retrofox/nsWindow.cpp
+index 5181b0f..d96d811 100644
+--- a/widget/retrofox/nsWindow.cpp
++++ b/widget/retrofox/nsWindow.cpp
+@@ -7,6 +7,10 @@
+ 
+ #include "gfxContext.h"
+ #include "mozilla/BasicEvents.h"
++#include "mozilla/MouseEvents.h"
++#include "mozilla/TextEvents.h"
++#include "nsIDOMWheelEvent.h"
++#include "prinrval.h"
+ #include "mozilla/gfx/2D.h"
+ #include "mozilla/layers/LayersTypes.h"
+ #include "nsIWidgetListener.h"
+@@ -204,6 +208,9 @@ NS_IMETHODIMP
+ nsWindow::Invalidate(const LayoutDeviceIntRect& aRect)
+ {
+   nsWindow* top = FindTopLevel();
++  // aRect is in this window's coordinates; the top-level window sits at 0,0
++  LayoutDeviceIntRect r = aRect + WidgetToScreenOffset() - top->WidgetToScreenOffset();
++  top->mPendingDirty = top->mPendingDirty.Union(r);
+   top->mDirty = true;
+   top->ScheduleTopLevelPaint();
+   return NS_OK;
+@@ -226,42 +233,83 @@ nsWindow::ScheduleTopLevelPaint()
+ bool
+ nsWindow::PaintIfDirty()
+ {
+-  if (!mDirty || !mVisible || !mWidgetListener || mBounds.IsEmpty()) {
++  if (!mDirty || !mVisible || mBounds.IsEmpty()) {
+     return false;
+   }
+   mDirty = false;
+ 
+   IntSize size(mBounds.width, mBounds.height);
++  bool newTarget = false;
+   if (!mFrame || mFrame->GetSize() != size) {
+     mFrame = Factory::CreateDrawTarget(BackendType::SKIA, size, SurfaceFormat::B8G8R8A8);
+     if (!mFrame) {
+       return false;
+     }
++    newTarget = true;
+   }
+ 
+-  mWidgetListener->WillPaintWindow(this);
+-  if (!mWidgetListener) {
+-    return false;
+-  }
+-
++  // With an embedded browser the top-level window has no listener of its own: the page is
++  // drawn by child windows (the content view's widget). Paint every visible window in the tree
++  // into the one surface, parents first.
+   bool painted = false;
+-  {
+-    RefPtr<gfxContext> ctx = gfxContext::CreateOrNull(mFrame);
+-    if (!ctx) {
+-      return false;
+-    }
+-    AutoLayerManagerSetup setup(this, ctx, BufferMode::BUFFER_NONE);
+-    LayoutDeviceIntRegion region(LayoutDeviceIntRect(0, 0, mBounds.width, mBounds.height));
+-    painted = mWidgetListener->PaintWindow(this, region);
+-  }
++  PaintTree(mFrame, LayoutDeviceIntPoint(0, 0), &painted);
+   mFrame->Flush();
+-  if (mWidgetListener) {
+-    mWidgetListener->DidPaintWindow();
+-  }
++
++  LayoutDeviceIntRect all(0, 0, mBounds.width, mBounds.height);
++  mLastPaintDirty = newTarget ? all : mPendingDirty.Intersect(all);
++  mPendingDirty.SetEmpty();
+   ++mFrameSerial;
+   return painted;
+ }
+ 
++void
++nsWindow::PaintTree(DrawTarget* aTarget, const LayoutDeviceIntPoint& aOffset, bool* aPainted)
++{
++  if (!mVisible) {
++    return;
++  }
++  if (mWidgetListener) {
++    mWidgetListener->WillPaintWindow(this);
++  }
++  if (mWidgetListener) {
++    RefPtr<gfxContext> ctx = gfxContext::CreateOrNull(aTarget);
++    if (ctx) {
++      ctx->SetMatrix(gfxMatrix::Translation(aOffset.x, aOffset.y));
++      AutoLayerManagerSetup setup(this, ctx, BufferMode::BUFFER_NONE);
++      LayoutDeviceIntRegion region(LayoutDeviceIntRect(0, 0, mBounds.width, mBounds.height));
++      if (mWidgetListener->PaintWindow(this, region)) {
++        *aPainted = true;
++      }
++    }
++    if (mWidgetListener) {
++      mWidgetListener->DidPaintWindow();
++    }
++  }
++  // Copy the list: painting can create or destroy windows
++  nsTArray<RefPtr<nsWindow>> children;
++  for (uint32_t i = 0; i < mChildren.Length(); ++i) {
++    children.AppendElement(mChildren[i]);
++  }
++  for (uint32_t i = 0; i < children.Length(); ++i) {
++    nsWindow* c = children[i];
++    c->PaintTree(aTarget, aOffset + LayoutDeviceIntPoint(c->mBounds.x, c->mBounds.y), aPainted);
++  }
++}
++
++nsWindow*
++nsWindow::ChildAt(LayoutDeviceIntPoint& aPoint)
++{
++  // Last child on top
++  for (int32_t i = int32_t(mChildren.Length()) - 1; i >= 0; --i) {
++    nsWindow* c = mChildren[i];
++    if (c->mVisible && c->mBounds.Contains(aPoint)) {
++      aPoint -= LayoutDeviceIntPoint(c->mBounds.x, c->mBounds.y);
++      return c->ChildAt(aPoint);
++    }
++  }
++  return this;
++}
++
+ void
+ nsWindow::ReportMoveEvent()
+ {
+@@ -296,11 +344,22 @@ nsWindow::DispatchEvent(WidgetGUIEvent* aEvent, nsEventStatus& aStatus)
+   return NS_OK;
+ }
+ 
++static RetrofoxTextFocusCallback sTextFocusCallback = nullptr;
++static bool sTextFocused = false;
++
+ NS_IMETHODIMP_(void)
+ nsWindow::SetInputContext(const InputContext& aContext, const InputContextAction& aAction)
+ {
+-  // TODO: ask the phone app to show the software keyboard
+   mInputContext = aContext;
++  // Ask the phone app for the software keyboard when an editable field has focus
++  bool focused = aContext.mIMEState.mEnabled == IMEState::ENABLED ||
++                 aContext.mIMEState.mEnabled == IMEState::PASSWORD;
++  if (focused != sTextFocused) {
++    sTextFocused = focused;
++    if (sTextFocusCallback) {
++      sTextFocusCallback(focused);
++    }
++  }
+ }
+ 
+ NS_IMETHODIMP_(InputContext)
+@@ -347,6 +406,11 @@ GetRetrofoxFrame(RetrofoxFrame* aOut)
+   aOut->mHeight = size.height;
+   aOut->mStride = stride;
+   aOut->mSerial = top->FrameSerial();
++  const LayoutDeviceIntRect& dirty = top->LastPaintDirty();
++  aOut->mDirtyX = dirty.x;
++  aOut->mDirtyY = dirty.y;
++  aOut->mDirtyWidth = dirty.width;
++  aOut->mDirtyHeight = dirty.height;
+   return true;
+ }
+ 
+@@ -357,5 +421,122 @@ PaintRetrofoxFrameNow()
+   return top && top->PaintIfDirty();
+ }
+ 
++static LayoutDeviceIntPoint sLastPointer(0, 0);
++
++static nsWindow*
++TargetAt(LayoutDeviceIntPoint& aPoint)
++{
++  nsWindow* top = nsWindow::TopLevel();
++  return top ? top->ChildAt(aPoint) : nullptr;
++}
++
++void
++DispatchRetrofoxPointer(RetrofoxPointerAction aAction, int32_t aX, int32_t aY)
++{
++  sLastPointer = LayoutDeviceIntPoint(aX, aY);
++  LayoutDeviceIntPoint pt(aX, aY);
++  RefPtr<nsWindow> target = TargetAt(pt);
++  if (!target) {
++    return;
++  }
++  // A tap is move + down + up, like widget/uikit
++  EventMessage messages[2] = { eMouseMove, eVoidEvent };
++  if (aAction == eRetrofoxPointerDown) {
++    messages[1] = eMouseDown;
++  } else if (aAction == eRetrofoxPointerUp) {
++    messages[0] = eMouseUp;
++  }
++  for (EventMessage msg : messages) {
++    if (msg == eVoidEvent) {
++      continue;
++    }
++    WidgetMouseEvent event(true, msg, target, WidgetMouseEvent::eReal, WidgetMouseEvent::eNormal);
++    event.mRefPoint = pt;
++    event.mClickCount = msg == eMouseMove ? 0 : 1;
++    event.button = WidgetMouseEvent::eLeftButton;
++    event.mTime = PR_IntervalNow();
++    event.inputSource = nsIDOMMouseEvent::MOZ_SOURCE_TOUCH;
++    nsEventStatus status;
++    target->DispatchEvent(&event, status);
++  }
++}
++
++void
++DispatchRetrofoxScroll(int32_t aDX, int32_t aDY)
++{
++  LayoutDeviceIntPoint pt = sLastPointer;
++  RefPtr<nsWindow> target = TargetAt(pt);
++  if (!target) {
++    return;
++  }
++  WidgetWheelEvent wheel(true, eWheel, target);
++  wheel.mRefPoint = pt;
++  wheel.mDeltaMode = nsIDOMWheelEvent::DOM_DELTA_PIXEL;
++  wheel.mDeltaX = aDX;
++  wheel.mDeltaY = aDY;
++  wheel.mIsNoLineOrPageDelta = true;
++  wheel.mScrollType = WidgetWheelEvent::SCROLL_SYNCHRONOUSLY;
++  wheel.mTime = PR_IntervalNow();
++  nsEventStatus status;
++  target->DispatchEvent(&wheel, status);
++}
++
++static void
++DispatchKeyEvent(nsWindow* aTarget, EventMessage aMessage, uint32_t aKeyCode, char16_t aChar)
++{
++  WidgetKeyboardEvent event(true, aMessage, aTarget);
++  event.mTime = PR_IntervalNow();
++  if (aChar) {
++    event.mKeyNameIndex = KEY_NAME_INDEX_USE_STRING;
++    event.mKeyValue.Assign(aChar);
++    if (aMessage == eKeyPress) {
++      event.mCharCode = aChar;
++    }
++  } else {
++    event.mKeyCode = aKeyCode;
++    event.mKeyNameIndex = aKeyCode == NS_VK_BACK ? KEY_NAME_INDEX_Backspace :
++                          aKeyCode == NS_VK_RETURN ? KEY_NAME_INDEX_Enter :
++                          KEY_NAME_INDEX_Unidentified;
++  }
++  nsEventStatus status;
++  aTarget->DispatchEvent(&event, status);
++}
++
++void
++DispatchRetrofoxKey(uint32_t aVirtualKey)
++{
++  // Keys go to the window under the last tap: that's where the focused field is
++  LayoutDeviceIntPoint pt = sLastPointer;
++  RefPtr<nsWindow> target = TargetAt(pt);
++  if (!target) {
++    return;
++  }
++  // Windows virtual-key codes match the DOM key codes for the keys the app sends
++  DispatchKeyEvent(target, eKeyDown, aVirtualKey, 0);
++  DispatchKeyEvent(target, eKeyPress, aVirtualKey, 0);
++  DispatchKeyEvent(target, eKeyUp, aVirtualKey, 0);
++}
++
++void
++DispatchRetrofoxText(const char16_t* aText, uint32_t aLength)
++{
++  LayoutDeviceIntPoint pt = sLastPointer;
++  RefPtr<nsWindow> target = TargetAt(pt);
++  if (!target) {
++    return;
++  }
++  for (uint32_t i = 0; i < aLength; ++i) {
++    DispatchKeyEvent(target, eKeyDown, 0, aText[i]);
++    DispatchKeyEvent(target, eKeyPress, 0, aText[i]);
++    DispatchKeyEvent(target, eKeyUp, 0, aText[i]);
++  }
++}
++
++void
++SetRetrofoxTextFocusCallback(RetrofoxTextFocusCallback aCallback)
++{
++  sTextFocusCallback = aCallback;
++}
++
+ } // namespace widget
+ } // namespace mozilla
+diff --git a/widget/retrofox/nsWindow.h b/widget/retrofox/nsWindow.h
+index 115eaff..bc98da2 100644
+--- a/widget/retrofox/nsWindow.h
++++ b/widget/retrofox/nsWindow.h
+@@ -64,6 +64,11 @@ public:
+   bool PaintIfDirty();
+   mozilla::gfx::DrawTarget* FrameTarget() const { return mFrame; }
+   uint32_t FrameSerial() const { return mFrameSerial; }
++  const LayoutDeviceIntRect& LastPaintDirty() const { return mLastPaintDirty; }
++
++  // The innermost visible window at aPoint (top-level coordinates), and aPoint made relative
++  // to it.
++  nsWindow* ChildAt(LayoutDeviceIntPoint& aPoint);
+ 
+   static nsWindow* TopLevel() { return sTopLevel; }
+ 
+@@ -76,6 +81,8 @@ protected:
+   void ReportMoveEvent();
+   void ReportSizeEvent();
+   void ReportSizeModeEvent(nsSizeMode aMode);
++  void PaintTree(mozilla::gfx::DrawTarget* aTarget, const LayoutDeviceIntPoint& aOffset,
++                 bool* aPainted);
+ 
+   bool mVisible;
+   bool mDirty;
+@@ -85,6 +92,8 @@ protected:
+   nsWindow* mParent;
+   InputContext mInputContext;
+   RefPtr<mozilla::gfx::DrawTarget> mFrame;
++  LayoutDeviceIntRect mPendingDirty;    // invalidated since the last paint (top-level coords)
++  LayoutDeviceIntRect mLastPaintDirty;  // what the last paint changed
+ 
+   static nsWindow* sTopLevel;  // the most recently shown top-level window
+ };

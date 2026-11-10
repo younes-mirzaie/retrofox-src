@@ -1,0 +1,1752 @@
+diff --git a/dom/canvas/WebGLContext.cpp b/dom/canvas/WebGLContext.cpp
+index 3368c67f6..31ac4bbd9 100644
+--- a/dom/canvas/WebGLContext.cpp
++++ b/dom/canvas/WebGLContext.cpp
+@@ -985,7 +985,7 @@ WebGLContext::SetDimensions(int32_t signedWidth, int32_t signedHeight)
+             return NS_ERROR_FAILURE;
+         }
+ 
+-#ifdef XP_WIN
++#if defined(XP_WIN) && !defined(MOZ_WINDOWS_PHONE)
+         if (gl->GetContextType() == gl::GLContextType::WGL &&
+             !gl::sWGLLib.HasDXInterop2())
+         {
+diff --git a/dom/media/ipc/VideoDecoderParent.cpp b/dom/media/ipc/VideoDecoderParent.cpp
+index b9c223924..9e529cc21 100644
+--- a/dom/media/ipc/VideoDecoderParent.cpp
++++ b/dom/media/ipc/VideoDecoderParent.cpp
+@@ -11,7 +11,7 @@
+ #include "mozilla/layers/ImageClient.h"
+ #include "MediaInfo.h"
+ #include "VideoDecoderManagerParent.h"
+-#ifdef XP_WIN
++#ifdef MOZ_WMF
+ #include "WMFDecoderModule.h"
+ #endif
+ 
+@@ -75,7 +75,7 @@ VideoDecoderParent::RecvInit(const VideoInfo& aInfo, const layers::TextureFactor
+ {
+   mKnowsCompositor->IdentifyTextureHost(aIdentifier);
+ 
+-#ifdef XP_WIN
++#ifdef MOZ_WMF
+   // TODO: Ideally we wouldn't hardcode the WMF PDM, and we'd use the normal PDM
+   // factory logic for picking a decoder.
+   WMFDecoderModule::Init();
+diff --git a/dom/media/platforms/PDMFactory.cpp b/dom/media/platforms/PDMFactory.cpp
+index 02cbd3d92..7f2ec49af 100644
+--- a/dom/media/platforms/PDMFactory.cpp
++++ b/dom/media/platforms/PDMFactory.cpp
+@@ -5,7 +5,7 @@
+ 
+ #include "PDMFactory.h"
+ 
+-#ifdef XP_WIN
++#ifdef MOZ_WMF
+ #include "WMFDecoderModule.h"
+ 
+ #endif
+@@ -51,7 +51,7 @@ class PDMFactoryImpl final {
+ public:
+   PDMFactoryImpl()
+   {
+-#ifdef XP_WIN
++#ifdef MOZ_WMF
+     WMFDecoderModule::Init();
+ #endif
+ #ifdef MOZ_APPLEMEDIA
+@@ -342,7 +342,7 @@ PDMFactory::CreatePDMs()
+     return;
+   }
+ 
+-#ifdef XP_WIN
++#ifdef MOZ_WMF
+   if (MediaPrefs::PDMWMFEnabled()) {
+     m = new WMFDecoderModule();
+     RefPtr<PlatformDecoderModule> remote = new dom::RemoteDecoderModule(m);
+diff --git a/gfx/2d/HelpersWinFonts.h b/gfx/2d/HelpersWinFonts.h
+index cd84070d4..1261775be 100644
+--- a/gfx/2d/HelpersWinFonts.h
++++ b/gfx/2d/HelpersWinFonts.h
+@@ -11,6 +11,12 @@ namespace gfx {
+ static BYTE
+ GetSystemTextQuality()
+ {
++#ifdef MOZ_WINDOWS_PHONE
++  // The phone has no font smoothing setting (the query fails or says off, which meant no
++  // antialiasing at all). Its own text is grayscale antialiased, as subpixel ClearType doesn't
++  // suit a screen that rotates.
++  return ANTIALIASED_QUALITY;
++#endif
+   BOOL font_smoothing;
+   UINT smoothing_type;
+ 
+diff --git a/gfx/cairo/libpixman/src/moz.build b/gfx/cairo/libpixman/src/moz.build
+index 9b463afd6..6072cfe9a 100644
+--- a/gfx/cairo/libpixman/src/moz.build
++++ b/gfx/cairo/libpixman/src/moz.build
+@@ -95,7 +95,9 @@ elif 'ppc' in CONFIG['OS_TEST']:
+ # This may be fixable if clang's ARM/iOS assembler improves into a
+ # viable solution in the future.
+ elif 'arm' in CONFIG['OS_TEST']:
+-    if CONFIG['OS_ARCH'] != 'Darwin':
++    # Windows: the GNU .S files can't be assembled, and pixman-arm.c's MSVC CPU
++    # detection needs armasm helpers that aren't in the tree
++    if CONFIG['OS_ARCH'] not in ('Darwin', 'WINNT'):
+         if CONFIG['HAVE_ARM_SIMD']:
+             use_arm_simd_gcc = True
+         if CONFIG['HAVE_ARM_NEON']:
+diff --git a/gfx/gl/GLContextProvider.h b/gfx/gl/GLContextProvider.h
+index bf4adf2f5..5fc658d09 100644
+--- a/gfx/gl/GLContextProvider.h
++++ b/gfx/gl/GLContextProvider.h
+@@ -30,7 +30,8 @@ namespace gl {
+ #include "GLContextProviderImpl.h"
+ #undef GL_CONTEXT_PROVIDER_NAME
+ 
+-#ifdef XP_WIN
++// No WGL on Windows Phone (no OpenGL driver); it gets the null provider
++#if defined(XP_WIN) && !defined(MOZ_WINDOWS_PHONE)
+   #define GL_CONTEXT_PROVIDER_NAME GLContextProviderWGL
+   #include "GLContextProviderImpl.h"
+   #undef GL_CONTEXT_PROVIDER_NAME
+diff --git a/gfx/gl/GLScreenBuffer.cpp b/gfx/gl/GLScreenBuffer.cpp
+index 966c017b1..01b6612a4 100755
+--- a/gfx/gl/GLScreenBuffer.cpp
++++ b/gfx/gl/GLScreenBuffer.cpp
+@@ -18,7 +18,7 @@
+ #include "mozilla/layers/TextureForwarder.h"
+ #include "mozilla/layers/TextureClientSharedSurface.h"
+ 
+-#ifdef XP_WIN
++#if defined(XP_WIN) && !defined(MOZ_WINDOWS_PHONE)
+ #include "SharedSurfaceANGLE.h"         // for SurfaceFactory_ANGLEShareHandle
+ #include "SharedSurfaceD3D11Interop.h"  // for SurfaceFactory_D3D11Interop
+ #include "mozilla/gfx/DeviceManagerDx.h"
+@@ -99,7 +99,7 @@ GLScreenBuffer::CreateFactory(GLContext* gl,
+                 break;
+             }
+             case mozilla::layers::LayersBackend::LAYERS_D3D11: {
+-#ifdef XP_WIN
++#if defined(XP_WIN) && !defined(MOZ_WINDOWS_PHONE)
+                 // Enable surface sharing only if ANGLE and compositing devices
+                 // are both WARP or both not WARP
+                 gfx::DeviceManagerDx* dm = gfx::DeviceManagerDx::Get();
+diff --git a/gfx/ipc/GPUParent.cpp b/gfx/ipc/GPUParent.cpp
+index c634dd56f..1825d1169 100644
+--- a/gfx/ipc/GPUParent.cpp
++++ b/gfx/ipc/GPUParent.cpp
+@@ -2,7 +2,7 @@
+ /* This Source Code Form is subject to the terms of the Mozilla Public
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+-#ifdef XP_WIN
++#ifdef MOZ_WMF
+ #include "WMF.h"
+ #endif
+ #include "GPUParent.h"
+@@ -96,7 +96,7 @@ GPUParent::Init(base::ProcessId aParentPid,
+   APZCTreeManager::InitializeGlobalState();
+   LayerTreeOwnerTracker::Initialize();
+   mozilla::ipc::SetThisProcessName("GPU Process");
+-#ifdef XP_WIN
++#ifdef MOZ_WMF
+   wmf::MFStartup();
+ #endif
+   return true;
+@@ -327,7 +327,7 @@ GPUParent::ActorDestroy(ActorDestroyReason aWhy)
+     ProcessChild::QuickExit();
+   }
+ 
+-#ifdef XP_WIN
++#ifdef MOZ_WMF
+   wmf::MFShutdown();
+ #endif
+ 
+diff --git a/gfx/layers/D3D11ShareHandleImage.cpp b/gfx/layers/D3D11ShareHandleImage.cpp
+index e00a5e3b7..d66108d35 100644
+--- a/gfx/layers/D3D11ShareHandleImage.cpp
++++ b/gfx/layers/D3D11ShareHandleImage.cpp
+@@ -3,7 +3,9 @@
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
++#ifndef MOZ_WINDOWS_PHONE
+ #include "WMF.h"
++#endif
+ #include "D3D11ShareHandleImage.h"
+ #include "gfxImageSurface.h"
+ #include "gfxWindowsPlatform.h"
+diff --git a/gfx/layers/d3d11/CompositorD3D11.cpp b/gfx/layers/d3d11/CompositorD3D11.cpp
+index b33fc1b00..763d812c2 100644
+--- a/gfx/layers/d3d11/CompositorD3D11.cpp
++++ b/gfx/layers/d3d11/CompositorD3D11.cpp
+@@ -22,7 +22,9 @@
+ #include "gfxUtils.h"
+ #include "mozilla/gfx/StackArray.h"
+ #include "mozilla/Services.h"
++#ifndef MOZ_WINDOWS_PHONE
+ #include "mozilla/widget/WinCompositorWidget.h"
++#endif
+ 
+ #include "mozilla/EnumeratedArray.h"
+ #include "BlendShaderConstants.h"
+@@ -198,7 +200,12 @@ CompositorD3D11::Initialize(nsCString* const out_failureReason)
+ 
+   mFeatureLevel = mDevice->GetFeatureLevel();
+ 
++#ifdef MOZ_WINDOWS_PHONE
++  *out_failureReason = "FEATURE_FAILURE_D3D11_NO_HWND";
++  return false;
++#else
+   mHwnd = mWidget->AsWindows()->GetHwnd();
++#endif
+ 
+   memset(&mVSConstants, 0, sizeof(VertexShaderConstants));
+ 
+@@ -976,6 +983,7 @@ CompositorD3D11::BeginFrame(const nsIntRegion& aInvalidRegion,
+   // this is important because resizing our buffers when mimised will fail and
+   // cause a crash when we're restored.
+   NS_ASSERTION(mHwnd, "Couldn't find an HWND when initialising?");
++#ifndef MOZ_WINDOWS_PHONE
+   if (::IsIconic(mHwnd)) {
+     // We are not going to render, and not going to call EndFrame so we have to
+     // read-unlock our textures to prevent them from accumulating.
+@@ -983,6 +991,7 @@ CompositorD3D11::BeginFrame(const nsIntRegion& aInvalidRegion,
+     *aRenderBoundsOut = IntRect();
+     return;
+   }
++#endif
+ 
+   if (mDevice->GetDeviceRemovedReason() != S_OK) {
+     gfxCriticalNote << "GFX: D3D11 skip BeginFrame with device-removed.";
+diff --git a/gfx/skia/moz.build b/gfx/skia/moz.build
+index a5998ab9d..dfbd4f65e 100644
+--- a/gfx/skia/moz.build
++++ b/gfx/skia/moz.build
+@@ -585,7 +585,7 @@ if CONFIG['INTEL_ARCHITECTURE']:
+     SOURCES['skia/src/opts/SkOpts_sse41.cpp'].flags += skia_opt_flags
+     SOURCES['skia/src/opts/SkOpts_sse42.cpp'].flags += skia_opt_flags
+     SOURCES['skia/src/opts/SkOpts_ssse3.cpp'].flags += skia_opt_flags
+-elif CONFIG['CPU_ARCH'] in ('arm', 'aarch64') and CONFIG['GNU_CC']:
++elif CONFIG['CPU_ARCH'] in ('arm', 'aarch64') and (CONFIG['GNU_CC'] or CONFIG['CLANG_CL']):
+     UNIFIED_SOURCES += [
+         'skia/src/core/SkUtilsArm.cpp',
+     ]
+@@ -605,7 +605,7 @@ elif CONFIG['CPU_ARCH'] in ('arm', 'aarch64') and CONFIG['GNU_CC']:
+             'skia/src/opts/SkBlitRow_opts_arm_neon.cpp',
+             'skia/src/opts/SkOpts_neon.cpp',
+         ]
+-    elif CONFIG['BUILD_ARM_NEON']:
++    elif CONFIG['BUILD_ARM_NEON'] or CONFIG['OS_ARCH'] == 'WINNT':
+         SOURCES += [
+             'skia/src/opts/SkBitmapProcState_arm_neon.cpp',
+             'skia/src/opts/SkBitmapProcState_matrixProcs_neon.cpp',
+@@ -618,7 +618,13 @@ elif CONFIG['CPU_ARCH'] in ('arm', 'aarch64') and CONFIG['GNU_CC']:
+         SOURCES['skia/src/opts/SkBlitMask_opts_arm_neon.cpp'].flags += CONFIG['NEON_FLAGS']
+         SOURCES['skia/src/opts/SkBlitRow_opts_arm_neon.cpp'].flags += CONFIG['NEON_FLAGS']
+         SOURCES['skia/src/opts/SkOpts_neon.cpp'].flags += CONFIG['NEON_FLAGS']
+-    if CONFIG['CPU_ARCH'] == 'aarch64' or CONFIG['BUILD_ARM_NEON']:
++    if CONFIG['CPU_ARCH'] == 'arm' and CONFIG['OS_ARCH'] == 'WINNT':
++        # Windows on ARM always has NEON. clang can't describe NEON register pairs in
++        # CodeView debug info on 32-bit ARM, so these files go without it.
++        for f in SOURCES:
++            if f.endswith('_neon.cpp'):
++                SOURCES[f].flags += ['/clang:-g0']
++    if CONFIG['CPU_ARCH'] == 'aarch64' or CONFIG['BUILD_ARM_NEON'] or CONFIG['OS_ARCH'] == 'WINNT':
+         SOURCES['skia/src/opts/SkBitmapProcState_arm_neon.cpp'].flags += skia_opt_flags
+         SOURCES['skia/src/opts/SkBitmapProcState_matrixProcs_neon.cpp'].flags += skia_opt_flags
+         SOURCES['skia/src/opts/SkBlitMask_opts_arm_neon.cpp'].flags += skia_opt_flags
+diff --git a/gfx/skia/skia/src/core/SkBitmapProcState.cpp b/gfx/skia/skia/src/core/SkBitmapProcState.cpp
+index 183016e69..32318eabd 100644
+--- a/gfx/skia/skia/src/core/SkBitmapProcState.cpp
++++ b/gfx/skia/skia/src/core/SkBitmapProcState.cpp
+@@ -25,9 +25,10 @@ extern const SkBitmapProcState::SampleProc32 gSkBitmapProcStateSample32_neon[];
+ extern void  S16_D16_filter_DX_neon(const SkBitmapProcState&, const uint32_t*, int, uint16_t*);
+ extern void  Clamp_S16_D16_filter_DX_shaderproc_neon(const void *, int, int, uint16_t*, int);
+ extern void  Repeat_S16_D16_filter_DX_shaderproc_neon(const void *, int, int, uint16_t*, int);
+-extern void  SI8_opaque_D32_filter_DX_neon(const SkBitmapProcState&, const uint32_t*, int, SkPMColor*);
++// SK_RESTRICT as in the definitions: the MSVC ABI mangles __restrict into the name
++extern void  SI8_opaque_D32_filter_DX_neon(const SkBitmapProcState&, const uint32_t* SK_RESTRICT, int, SkPMColor* SK_RESTRICT);
+ extern void  SI8_opaque_D32_filter_DX_shaderproc_neon(const void *, int, int, uint32_t*, int);
+-extern void  Clamp_SI8_opaque_D32_filter_DX_shaderproc_neon(const void*, int, int, uint32_t*, int);
++extern void  Clamp_SI8_opaque_D32_filter_DX_shaderproc_neon(const void*, int, int, uint32_t* SK_RESTRICT, int);
+ #endif
+ 
+ extern void Clamp_S32_opaque_D32_nofilter_DX_shaderproc(const void*, int, int, uint32_t*, int);
+diff --git a/gfx/skia/skia/src/ports/SkTLS_win.cpp b/gfx/skia/skia/src/ports/SkTLS_win.cpp
+index c349ad99c..77f945a87 100644
+--- a/gfx/skia/skia/src/ports/SkTLS_win.cpp
++++ b/gfx/skia/skia/src/ports/SkTLS_win.cpp
+@@ -37,7 +37,7 @@ void SkTLS::PlatformSetSpecific(void* ptr) {
+ 
+ // Call TLS destructors on thread exit. Code based on Chromium's
+ // base/threading/thread_local_storage_win.cc
+-#ifdef _WIN64
++#if defined(_WIN64) || defined(_M_ARM)
+ 
+ #pragma comment(linker, "/INCLUDE:_tls_used")
+ #pragma comment(linker, "/INCLUDE:skia_tls_callback")
+@@ -61,7 +61,7 @@ void NTAPI onTLSCallback(PVOID unused, DWORD reason, PVOID unused2) {
+ 
+ extern "C" {
+ 
+-#ifdef _WIN64
++#if defined(_WIN64) || defined(_M_ARM)
+ 
+ #pragma const_seg(".CRT$XLB")
+ extern const PIMAGE_TLS_CALLBACK skia_tls_callback;
+diff --git a/ipc/chromium/src/base/atomicops.h b/ipc/chromium/src/base/atomicops.h
+index 7daa24b33..86327c35e 100644
+--- a/ipc/chromium/src/base/atomicops.h
++++ b/ipc/chromium/src/base/atomicops.h
+@@ -97,6 +97,10 @@ Atomic32 Release_CompareAndSwap(volatile Atomic32* ptr,
+                                 Atomic32 old_value,
+                                 Atomic32 new_value);
+ 
++#if defined(_M_ARM) && defined(MemoryBarrier)
++// WinNT.h defines MemoryBarrier as a macro on ARM
++#undef MemoryBarrier
++#endif
+ void MemoryBarrier();
+ void NoBarrier_Store(volatile Atomic32* ptr, Atomic32 value);
+ void Acquire_Store(volatile Atomic32* ptr, Atomic32 value);
+diff --git a/ipc/chromium/src/base/cpu.cc b/ipc/chromium/src/base/cpu.cc
+index 5b1bba44e..7df3674e2 100644
+--- a/ipc/chromium/src/base/cpu.cc
++++ b/ipc/chromium/src/base/cpu.cc
+@@ -21,6 +21,10 @@ CPU::CPU()
+ }
+ 
+ void CPU::Initialize() {
++#if defined(_M_ARM) || defined(_M_ARM64)
++  // No cpuid on ARM: keep the "unknown" vendor and zeroed fields
++  return;
++#else
+   int cpu_info[4] = {-1};
+   char cpu_string[0x20];
+ 
+@@ -50,6 +54,7 @@ void CPU::Initialize() {
+     ext_family_ = (cpu_info[0] >> 20) & 0xff;
+     cpu_vendor_ = cpu_string;
+   }
++#endif
+ }
+ 
+ }  // namespace base
+diff --git a/ipc/chromium/src/base/message_pump_win.cc b/ipc/chromium/src/base/message_pump_win.cc
+index cf934a719..1e5188b56 100644
+--- a/ipc/chromium/src/base/message_pump_win.cc
++++ b/ipc/chromium/src/base/message_pump_win.cc
+@@ -10,7 +10,9 @@
+ #include "base/message_loop.h"
+ #include "base/histogram.h"
+ #include "base/win_util.h"
++#ifndef MOZ_WINDOWS_PHONE
+ #include "WinUtils.h"
++#endif
+ 
+ using base::Time;
+ 
+@@ -259,7 +261,12 @@ void MessagePumpForUI::WaitForWork() {
+   if (delay < 0)  // Negative value means no timers waiting.
+     delay = INFINITE;
+ 
++#ifdef MOZ_WINDOWS_PHONE
++  ::MsgWaitForMultipleObjectsEx(0, nullptr, delay, QS_ALLINPUT,
++                                MWMO_INPUTAVAILABLE);
++#else
+   mozilla::widget::WinUtils::WaitForMessage(delay);
++#endif
+ }
+ 
+ void MessagePumpForUI::HandleWorkMessage() {
+diff --git a/ipc/chromium/src/base/thread_local_storage_win.cc b/ipc/chromium/src/base/thread_local_storage_win.cc
+index 4b8bc0c03..ee0fbf4fd 100644
+--- a/ipc/chromium/src/base/thread_local_storage_win.cc
++++ b/ipc/chromium/src/base/thread_local_storage_win.cc
+@@ -130,7 +130,7 @@ void ThreadLocalStorage::ThreadExit() {
+ // This magic is from http://www.codeproject.com/threads/tls.asp
+ // and it works for VC++ 7.0 and later.
+ 
+-#ifdef _WIN64
++#if defined(_WIN64) || defined(_M_ARM)  // no leading underscore on these targets
+ 
+ // This makes the linker create the TLS directory if it's not already
+ // there.  (e.g. if __declspec(thread) is not used).
+@@ -163,7 +163,7 @@ void NTAPI OnThreadExit(PVOID module, DWORD reason, PVOID reserved)
+ // implicitly loaded.
+ //
+ // See VC\crt\src\tlssup.c for reference.
+-#ifdef _WIN64
++#if defined(_WIN64) || defined(_M_ARM)
+ 
+ // .CRT section is merged with .rdata on x64 so it must be constant data.
+ #pragma const_seg(".CRT$XLB")
+diff --git a/ipc/glue/WindowsMessageLoop.cpp b/ipc/glue/WindowsMessageLoop.cpp
+index 3e506b059..46317ee85 100644
+--- a/ipc/glue/WindowsMessageLoop.cpp
++++ b/ipc/glue/WindowsMessageLoop.cpp
+@@ -13,7 +13,9 @@
+ #include "nsServiceManagerUtils.h"
+ #include "nsString.h"
+ #include "nsIXULAppInfo.h"
++#ifndef MOZ_WINDOWS_PHONE
+ #include "WinUtils.h"
++#endif
+ 
+ #include "mozilla/ArrayUtils.h"
+ #include "mozilla/ipc/ProtocolUtils.h"
+diff --git a/js/src/jit/AtomicOperations.h b/js/src/jit/AtomicOperations.h
+index 35912a90d..79cd4200c 100644
+--- a/js/src/jit/AtomicOperations.h
++++ b/js/src/jit/AtomicOperations.h
+@@ -342,6 +342,10 @@ AtomicOperations::isLockfree(int32_t size)
+ #  include "jit/none/AtomicOperations-ppc.h"
+ # elif defined(__aarch64__)
+ #  include "jit/arm64/AtomicOperations-arm64.h"
++# elif defined(__arm__) || defined(_M_ARM)
++   // 32-bit ARM without the JIT (Windows on ARM: retrofox). The "ppc" file is plain compiler
++   // __atomic builtins; ARMv7 does 8-byte atomics natively (ldrexd/strexd).
++#  include "jit/none/AtomicOperations-ppc.h"
+ # else
+ #  include "jit/none/AtomicOperations-none.h" // These MOZ_CRASH() always
+ # endif
+diff --git a/js/src/jsapi.cpp b/js/src/jsapi.cpp
+index cdf7d6f96..3362ae7a8 100644
+--- a/js/src/jsapi.cpp
++++ b/js/src/jsapi.cpp
+@@ -7171,7 +7171,8 @@ JS_GetGlobalJitCompilerOption(JSContext* cx, JSJitCompilerOption opt, uint32_t*
+ 
+ /************************************************************************/
+ 
+-#if !defined(STATIC_EXPORTABLE_JS_API) && !defined(STATIC_JS_API) && defined(XP_WIN)
++// Only when JS is its own DLL: linked into another one (libxul), that DLL has the DllMain
++#if defined(JS_SHARED_LIBRARY) && defined(XP_WIN)
+ 
+ #include "jswin.h"
+ 
+diff --git a/js/src/moz.build b/js/src/moz.build
+index d004243bf..63f8b3845 100644
+--- a/js/src/moz.build
++++ b/js/src/moz.build
+@@ -650,6 +650,8 @@ ReservedWordsGenerated.inputs += [
+ 
+ if CONFIG['JS_SHARED_LIBRARY']:
+     GeckoSharedLibrary('js', linkage=None)
++    # jsapi.cpp gives the DLL its DllMain
++    DEFINES['JS_SHARED_LIBRARY'] = True
+     SHARED_LIBRARY_NAME = CONFIG['JS_LIBRARY_NAME']
+     SDK_LIBRARY = True
+     # Standalone JS builds don't run MOZ_CONFIG_ICU, so there may be no icu library
+diff --git a/layout/base/nsRefreshDriver.cpp b/layout/base/nsRefreshDriver.cpp
+index e4cc98114..6776ae675 100644
+--- a/layout/base/nsRefreshDriver.cpp
++++ b/layout/base/nsRefreshDriver.cpp
+@@ -21,8 +21,10 @@
+ // mmsystem isn't part of WIN32_LEAN_AND_MEAN, so we have
+ // to manually include it
+ #include <mmsystem.h>
++#ifndef MOZ_WINDOWS_PHONE
+ #include "WinUtils.h"
+ #endif
++#endif
+ 
+ #include "mozilla/ArrayUtils.h"
+ #include "mozilla/AutoRestore.h"
+@@ -891,6 +893,14 @@ CreateVsyncRefreshTimer()
+     return;
+   }
+ 
++#ifdef MOZ_WINDOWS_PHONE
++  // retrofox: the Windows vsync source waits on DwmFlush, which the phone doesn't have, and
++  // falls back to delayed tasks on its own message loop, which fire far too late there: pages
++  // painted a few times a second. The regular refresh timer (layout.frame_rate, 60 Hz by
++  // default) runs on the XPCOM timer thread instead.
++  return;
++#endif
++
+   if (XRE_IsParentProcess()) {
+     // Make sure all vsync systems are ready.
+     gfxPlatform::GetPlatform();
+diff --git a/layout/media/symbols.def.in b/layout/media/symbols.def.in
+index 31cb2c963..a5f796571 100644
+--- a/layout/media/symbols.def.in
++++ b/layout/media/symbols.def.in
+@@ -110,7 +110,7 @@ JxlThreadParallelRunner
+ JxlThreadParallelRunnerCreate
+ JxlThreadParallelRunnerDestroy
+ JxlThreadParallelRunnerDefaultNumWorkerThreads
+-#ifdef MOZ_VORBIS
++#if defined(MOZ_VORBIS) || defined(MOZ_TREMOR)
+ ogg_page_bos
+ ogg_page_granulepos
+ ogg_page_serialno
+@@ -131,19 +131,11 @@ ogg_sync_init
+ ogg_sync_pageseek
+ ogg_sync_reset
+ ogg_sync_wrote
+-vorbis_analysis
+-vorbis_analysis_blockout
+-vorbis_analysis_buffer
+-vorbis_analysis_init
+-vorbis_analysis_headerout
+-vorbis_analysis_wrote
+ vorbis_block_clear
+ vorbis_block_init
+-vorbis_comment_add_tag
+ vorbis_comment_clear
+ vorbis_comment_init
+ vorbis_dsp_clear
+-vorbis_encode_init_vbr
+ vorbis_info_clear
+ vorbis_info_init
+ vorbis_packet_blocksize
+@@ -155,10 +147,21 @@ vorbis_synthesis_pcmout
+ vorbis_synthesis_read
+ vorbis_synthesis_restart
+ #endif
++#ifdef MOZ_VORBIS
++vorbis_analysis
++vorbis_comment_add_tag
++vorbis_analysis_blockout
++vorbis_analysis_buffer
++vorbis_analysis_init
++vorbis_analysis_headerout
++vorbis_analysis_wrote
++vorbis_encode_init_vbr
++#endif
+ moz_speex_resampler_init
+ moz_speex_resampler_destroy
+ moz_speex_resampler_process_float
+ moz_speex_resampler_process_interleaved_float
++moz_speex_resampler_process_int
+ moz_speex_resampler_process_interleaved_int
+ moz_speex_resampler_set_rate
+ moz_speex_resampler_get_rate
+@@ -208,12 +211,16 @@ opus_decoder_destroy
+ opus_decoder_ctl
+ opus_decoder_get_nb_samples
+ opus_decode
++#ifdef MOZ_SAMPLE_TYPE_FLOAT32
+ opus_decode_float
++#endif
+ opus_get_version_string
+ opus_multistream_decoder_create
+ opus_multistream_decoder_ctl
+ opus_multistream_decoder_destroy
++#ifdef MOZ_SAMPLE_TYPE_FLOAT32
+ opus_multistream_decode_float
++#endif
+ opus_multistream_decode
+ opus_packet_get_nb_frames
+ opus_packet_get_samples_per_frame
+@@ -221,7 +228,9 @@ opus_encoder_create
+ opus_encoder_destroy
+ opus_encoder_ctl
+ opus_encode
++#ifdef MOZ_SAMPLE_TYPE_FLOAT32
+ opus_encode_float
++#endif
+ #ifdef MOZ_WEBRTC
+ opus_custom_mode_create
+ opus_packet_parse
+diff --git a/media/ffvpx/config.h b/media/ffvpx/config.h
+index 8ccf8a573..d8a2510d4 100644
+--- a/media/ffvpx/config.h
++++ b/media/ffvpx/config.h
+@@ -14,6 +14,8 @@
+ #endif
+ #if defined(_ARM64_)
+ #include "config_win64_aarch64.h"
++#elif defined(_M_ARM)
++#include "config_win32_arm.h"
+ #else
+ #if defined(HAVE_64BIT_BUILD)
+ #include "config_win64.h"
+diff --git a/media/ffvpx/config_win32_arm.h b/media/ffvpx/config_win32_arm.h
+new file mode 100644
+index 000000000..8cb6406c6
+--- /dev/null
++++ b/media/ffvpx/config_win32_arm.h
+@@ -0,0 +1,738 @@
++/* Automatically generated by configure - do not modify! */
++#ifndef FFMPEG_CONFIG_H
++#define FFMPEG_CONFIG_H
++/* retrofox: config_win32.h with x86 code turned off, for Windows on 32-bit ARM
++   (Windows Phone 8.1). Plain C only: ffvpx has no ARM assembly for MSVC-style targets. */
++#define FFMPEG_CONFIGURATION "--disable-all --enable-avcodec --enable-decoder='vp8,vp9,flac' --enable-parser='vp8,vp9' --disable-static --enable-shared --disable-autodetect --toolchain=msvc"
++#define FFMPEG_LICENSE "LGPL version 2.1 or later"
++#define CONFIG_THIS_YEAR 2022
++#define FFMPEG_DATADIR "/usr/local/share/ffmpeg"
++#define AVCONV_DATADIR "/usr/local/share/ffmpeg"
++#define CC_IDENT "Microsoft (R) C/C++ Optimizing Compiler Version 19.29.30133 for ARM"
++#define OS_NAME win32
++#define av_restrict restrict
++#define EXTERN_PREFIX ""
++#define EXTERN_ASM
++#define BUILDSUF ""
++#define SLIBSUF ".dll"
++#define HAVE_MMX2 HAVE_MMXEXT
++#define SWS_MAX_FILTER_SIZE 256
++#define ARCH_AARCH64 0
++#define ARCH_ALPHA 0
++#define ARCH_ARM 0
++#define ARCH_AVR32 0
++#define ARCH_AVR32_AP 0
++#define ARCH_AVR32_UC 0
++#define ARCH_BFIN 0
++#define ARCH_IA64 0
++#define ARCH_LOONGARCH 0
++#define ARCH_LOONGARCH32 0
++#define ARCH_LOONGARCH64 0
++#define ARCH_M68K 0
++#define ARCH_MIPS 0
++#define ARCH_MIPS64 0
++#define ARCH_PARISC 0
++#define ARCH_PPC 0
++#define ARCH_PPC64 0
++#define ARCH_RISCV 0
++#define ARCH_S390 0
++#define ARCH_SH4 0
++#define ARCH_SPARC 0
++#define ARCH_SPARC64 0
++#define ARCH_TILEGX 0
++#define ARCH_TILEPRO 0
++#define ARCH_TOMI 0
++#define ARCH_X86 0
++#define ARCH_X86_32 0
++#define ARCH_X86_64 0
++#define HAVE_ARMV5TE 0
++#define HAVE_ARMV6 0
++#define HAVE_ARMV6T2 0
++#define HAVE_ARMV8 0
++#define HAVE_NEON 0
++#define HAVE_VFP 0
++#define HAVE_VFPV3 0
++#define HAVE_SETEND 0
++#define HAVE_ALTIVEC 0
++#define HAVE_DCBZL 0
++#define HAVE_LDBRX 0
++#define HAVE_POWER8 0
++#define HAVE_PPC4XX 0
++#define HAVE_VSX 0
++#define HAVE_AESNI 0
++#define HAVE_AMD3DNOW 0
++#define HAVE_AMD3DNOWEXT 0
++#define HAVE_AVX 0
++#define HAVE_AVX2 0
++#define HAVE_AVX512 0
++#define HAVE_AVX512ICL 0
++#define HAVE_FMA3 0
++#define HAVE_FMA4 0
++#define HAVE_MMX 0
++#define HAVE_MMXEXT 0
++#define HAVE_SSE 0
++#define HAVE_SSE2 0
++#define HAVE_SSE3 0
++#define HAVE_SSE4 0
++#define HAVE_SSE42 0
++#define HAVE_SSSE3 0
++#define HAVE_XOP 0
++#define HAVE_CPUNOP 0
++#define HAVE_I686 0
++#define HAVE_MIPSFPU 0
++#define HAVE_MIPS32R2 0
++#define HAVE_MIPS32R5 0
++#define HAVE_MIPS64R2 0
++#define HAVE_MIPS32R6 0
++#define HAVE_MIPS64R6 0
++#define HAVE_MIPSDSP 0
++#define HAVE_MIPSDSPR2 0
++#define HAVE_MSA 0
++#define HAVE_LOONGSON2 0
++#define HAVE_LOONGSON3 0
++#define HAVE_MMI 0
++#define HAVE_LSX 0
++#define HAVE_LASX 0
++#define HAVE_ARMV5TE_EXTERNAL 0
++#define HAVE_ARMV6_EXTERNAL 0
++#define HAVE_ARMV6T2_EXTERNAL 0
++#define HAVE_ARMV8_EXTERNAL 0
++#define HAVE_NEON_EXTERNAL 0
++#define HAVE_VFP_EXTERNAL 0
++#define HAVE_VFPV3_EXTERNAL 0
++#define HAVE_SETEND_EXTERNAL 0
++#define HAVE_ALTIVEC_EXTERNAL 0
++#define HAVE_DCBZL_EXTERNAL 0
++#define HAVE_LDBRX_EXTERNAL 0
++#define HAVE_POWER8_EXTERNAL 0
++#define HAVE_PPC4XX_EXTERNAL 0
++#define HAVE_VSX_EXTERNAL 0
++#define HAVE_AESNI_EXTERNAL 0
++#define HAVE_AMD3DNOW_EXTERNAL 0
++#define HAVE_AMD3DNOWEXT_EXTERNAL 0
++#define HAVE_AVX_EXTERNAL 0
++#define HAVE_AVX2_EXTERNAL 0
++#define HAVE_AVX512_EXTERNAL 0
++#define HAVE_AVX512ICL_EXTERNAL 0
++#define HAVE_FMA3_EXTERNAL 0
++#define HAVE_FMA4_EXTERNAL 0
++#define HAVE_MMX_EXTERNAL 0
++#define HAVE_MMXEXT_EXTERNAL 0
++#define HAVE_SSE_EXTERNAL 0
++#define HAVE_SSE2_EXTERNAL 0
++#define HAVE_SSE3_EXTERNAL 0
++#define HAVE_SSE4_EXTERNAL 0
++#define HAVE_SSE42_EXTERNAL 0
++#define HAVE_SSSE3_EXTERNAL 0
++#define HAVE_XOP_EXTERNAL 0
++#define HAVE_CPUNOP_EXTERNAL 0
++#define HAVE_I686_EXTERNAL 0
++#define HAVE_MIPSFPU_EXTERNAL 0
++#define HAVE_MIPS32R2_EXTERNAL 0
++#define HAVE_MIPS32R5_EXTERNAL 0
++#define HAVE_MIPS64R2_EXTERNAL 0
++#define HAVE_MIPS32R6_EXTERNAL 0
++#define HAVE_MIPS64R6_EXTERNAL 0
++#define HAVE_MIPSDSP_EXTERNAL 0
++#define HAVE_MIPSDSPR2_EXTERNAL 0
++#define HAVE_MSA_EXTERNAL 0
++#define HAVE_LOONGSON2_EXTERNAL 0
++#define HAVE_LOONGSON3_EXTERNAL 0
++#define HAVE_MMI_EXTERNAL 0
++#define HAVE_LSX_EXTERNAL 0
++#define HAVE_LASX_EXTERNAL 0
++#define HAVE_ARMV5TE_INLINE 0
++#define HAVE_ARMV6_INLINE 0
++#define HAVE_ARMV6T2_INLINE 0
++#define HAVE_ARMV8_INLINE 0
++#define HAVE_NEON_INLINE 0
++#define HAVE_VFP_INLINE 0
++#define HAVE_VFPV3_INLINE 0
++#define HAVE_SETEND_INLINE 0
++#define HAVE_ALTIVEC_INLINE 0
++#define HAVE_DCBZL_INLINE 0
++#define HAVE_LDBRX_INLINE 0
++#define HAVE_POWER8_INLINE 0
++#define HAVE_PPC4XX_INLINE 0
++#define HAVE_VSX_INLINE 0
++#define HAVE_AESNI_INLINE 0
++#define HAVE_AMD3DNOW_INLINE 0
++#define HAVE_AMD3DNOWEXT_INLINE 0
++#define HAVE_AVX_INLINE 0
++#define HAVE_AVX2_INLINE 0
++#define HAVE_AVX512_INLINE 0
++#define HAVE_AVX512ICL_INLINE 0
++#define HAVE_FMA3_INLINE 0
++#define HAVE_FMA4_INLINE 0
++#define HAVE_MMX_INLINE 0
++#define HAVE_MMXEXT_INLINE 0
++#define HAVE_SSE_INLINE 0
++#define HAVE_SSE2_INLINE 0
++#define HAVE_SSE3_INLINE 0
++#define HAVE_SSE4_INLINE 0
++#define HAVE_SSE42_INLINE 0
++#define HAVE_SSSE3_INLINE 0
++#define HAVE_XOP_INLINE 0
++#define HAVE_CPUNOP_INLINE 0
++#define HAVE_I686_INLINE 0
++#define HAVE_MIPSFPU_INLINE 0
++#define HAVE_MIPS32R2_INLINE 0
++#define HAVE_MIPS32R5_INLINE 0
++#define HAVE_MIPS64R2_INLINE 0
++#define HAVE_MIPS32R6_INLINE 0
++#define HAVE_MIPS64R6_INLINE 0
++#define HAVE_MIPSDSP_INLINE 0
++#define HAVE_MIPSDSPR2_INLINE 0
++#define HAVE_MSA_INLINE 0
++#define HAVE_LOONGSON2_INLINE 0
++#define HAVE_LOONGSON3_INLINE 0
++#define HAVE_MMI_INLINE 0
++#define HAVE_LSX_INLINE 0
++#define HAVE_LASX_INLINE 0
++#define HAVE_ALIGNED_STACK 0
++#define HAVE_FAST_64BIT 0
++#define HAVE_FAST_CLZ 1
++#define HAVE_FAST_CMOV 0
++#define HAVE_LOCAL_ALIGNED 1
++#define HAVE_SIMD_ALIGN_16 1
++#define HAVE_SIMD_ALIGN_32 1
++#define HAVE_SIMD_ALIGN_64 1
++#define HAVE_ATOMIC_CAS_PTR 0
++#define HAVE_MACHINE_RW_BARRIER 0
++#define HAVE_MEMORYBARRIER 1
++#define HAVE_MM_EMPTY 0
++#define HAVE_RDTSC 1
++#define HAVE_SEM_TIMEDWAIT 0
++#define HAVE_SYNC_VAL_COMPARE_AND_SWAP 0
++#define HAVE_CABS 0
++#define HAVE_CEXP 0
++#define HAVE_INLINE_ASM 0
++#define HAVE_SYMVER 0
++#define HAVE_X86ASM 0
++#define HAVE_BIGENDIAN 0
++#define HAVE_FAST_UNALIGNED 1
++#define HAVE_ARPA_INET_H 0
++#define HAVE_ASM_TYPES_H 0
++#define HAVE_CDIO_PARANOIA_H 0
++#define HAVE_CDIO_PARANOIA_PARANOIA_H 0
++#define HAVE_CUDA_H 0
++#define HAVE_DISPATCH_DISPATCH_H 0
++#define HAVE_DEV_BKTR_IOCTL_BT848_H 0
++#define HAVE_DEV_BKTR_IOCTL_METEOR_H 0
++#define HAVE_DEV_IC_BT8XX_H 0
++#define HAVE_DEV_VIDEO_BKTR_IOCTL_BT848_H 0
++#define HAVE_DEV_VIDEO_METEOR_IOCTL_METEOR_H 0
++#define HAVE_DIRECT_H 1
++#define HAVE_DIRENT_H 0
++#define HAVE_DXGIDEBUG_H 1
++#define HAVE_DXVA_H 1
++#define HAVE_ES2_GL_H 0
++#define HAVE_GSM_H 0
++#define HAVE_IO_H 1
++#define HAVE_LINUX_DMA_BUF_H 0
++#define HAVE_LINUX_PERF_EVENT_H 0
++#define HAVE_MACHINE_IOCTL_BT848_H 0
++#define HAVE_MACHINE_IOCTL_METEOR_H 0
++#define HAVE_OPENCV2_CORE_CORE_C_H 0
++#define HAVE_OPENGL_GL3_H 0
++#define HAVE_POLL_H 0
++#define HAVE_SYS_PARAM_H 0
++#define HAVE_SYS_RESOURCE_H 0
++#define HAVE_SYS_SELECT_H 0
++#define HAVE_SYS_SOUNDCARD_H 0
++#define HAVE_SYS_TIME_H 0
++#define HAVE_SYS_UN_H 0
++#define HAVE_SYS_VIDEOIO_H 0
++#define HAVE_TERMIOS_H 0
++#define HAVE_UDPLITE_H 0
++#define HAVE_UNISTD_H 0
++#define HAVE_VALGRIND_VALGRIND_H 0
++#define HAVE_WINDOWS_H 1
++#define HAVE_WINSOCK2_H 1
++#define HAVE_INTRINSICS_NEON 0
++#define HAVE_ATANF 1
++#define HAVE_ATAN2F 1
++#define HAVE_CBRT 1
++#define HAVE_CBRTF 1
++#define HAVE_COPYSIGN 1
++#define HAVE_COSF 1
++#define HAVE_ERF 1
++#define HAVE_EXP2 1
++#define HAVE_EXP2F 1
++#define HAVE_EXPF 1
++#define HAVE_HYPOT 1
++#define HAVE_ISFINITE 1
++#define HAVE_ISINF 1
++#define HAVE_ISNAN 1
++#define HAVE_LDEXPF 1
++#define HAVE_LLRINT 1
++#define HAVE_LLRINTF 1
++#define HAVE_LOG2 1
++#define HAVE_LOG2F 1
++#define HAVE_LOG10F 1
++#define HAVE_LRINT 1
++#define HAVE_LRINTF 1
++#define HAVE_POWF 1
++#define HAVE_RINT 1
++#define HAVE_ROUND 1
++#define HAVE_ROUNDF 1
++#define HAVE_SINF 1
++#define HAVE_TRUNC 1
++#define HAVE_TRUNCF 1
++#define HAVE_DOS_PATHS 1
++#define HAVE_LIBC_MSVCRT 1
++#define HAVE_MMAL_PARAMETER_VIDEO_MAX_NUM_CALLBACKS 0
++#define HAVE_SECTION_DATA_REL_RO 0
++#define HAVE_THREADS 1
++#define HAVE_UWP 0
++#define HAVE_WINRT 0
++#define HAVE_ACCESS 1
++#define HAVE_ALIGNED_MALLOC 1
++#define HAVE_CLOCK_GETTIME 0
++#define HAVE_CLOSESOCKET 1
++#define HAVE_COMMANDLINETOARGVW 1
++#define HAVE_FCNTL 0
++#define HAVE_GETADDRINFO 1
++#define HAVE_GETAUXVAL 0
++#define HAVE_GETENV 1
++#define HAVE_GETHRTIME 0
++#define HAVE_GETOPT 0
++#define HAVE_GETMODULEHANDLE 1
++#define HAVE_GETPROCESSAFFINITYMASK 1
++#define HAVE_GETPROCESSMEMORYINFO 1
++#define HAVE_GETPROCESSTIMES 1
++#define HAVE_GETRUSAGE 0
++#define HAVE_GETSTDHANDLE 1
++#define HAVE_GETSYSTEMTIMEASFILETIME 1
++#define HAVE_GETTIMEOFDAY 0
++#define HAVE_GLOB 0
++#define HAVE_GLXGETPROCADDRESS 0
++#define HAVE_GMTIME_R 0
++#define HAVE_INET_ATON 0
++#define HAVE_ISATTY 1
++#define HAVE_KBHIT 1
++#define HAVE_LSTAT 0
++#define HAVE_LZO1X_999_COMPRESS 0
++#define HAVE_MACH_ABSOLUTE_TIME 0
++#define HAVE_MAPVIEWOFFILE 1
++#define HAVE_MKSTEMP 0
++#define HAVE_MMAP 0
++#define HAVE_MPROTECT 0
++#define HAVE_NANOSLEEP 0
++#define HAVE_PEEKNAMEDPIPE 1
++#define HAVE_PTHREAD_CANCEL 0
++#define HAVE_SCHED_GETAFFINITY 0
++#define HAVE_SECITEMIMPORT 0
++#define HAVE_SETCONSOLETEXTATTRIBUTE 1
++#define HAVE_SETCONSOLECTRLHANDLER 1
++#define HAVE_SETDLLDIRECTORY 1
++#define HAVE_SETMODE 1
++#define HAVE_SETRLIMIT 0
++#define HAVE_SLEEP 1
++#define HAVE_STRERROR_R 0
++#define HAVE_SYSCONF 0
++#define HAVE_SYSCTL 0
++#define HAVE_USLEEP 0
++#define HAVE_UTGETOSTYPEFROMSTRING 0
++#define HAVE_VIRTUALALLOC 1
++#define HAVE_WGLGETPROCADDRESS 0
++#define HAVE_BCRYPT 1
++#define HAVE_VAAPI_DRM 0
++#define HAVE_VAAPI_WIN32 0
++#define HAVE_VAAPI_X11 0
++#define HAVE_VDPAU_X11 0
++#define HAVE_PTHREADS 0
++#define HAVE_OS2THREADS 0
++#define HAVE_W32THREADS 1
++#define HAVE_AS_ARCH_DIRECTIVE 0
++#define HAVE_AS_DN_DIRECTIVE 0
++#define HAVE_AS_FPU_DIRECTIVE 0
++#define HAVE_AS_FUNC 0
++#define HAVE_AS_OBJECT_ARCH 0
++#define HAVE_ASM_MOD_Q 0
++#define HAVE_BLOCKS_EXTENSION 0
++#define HAVE_EBP_AVAILABLE 0
++#define HAVE_EBX_AVAILABLE 0
++#define HAVE_GNU_AS 0
++#define HAVE_GNU_WINDRES 0
++#define HAVE_IBM_ASM 0
++#define HAVE_INLINE_ASM_DIRECT_SYMBOL_REFS 0
++#define HAVE_INLINE_ASM_LABELS 0
++#define HAVE_INLINE_ASM_NONLOCAL_LABELS 0
++#define HAVE_PRAGMA_DEPRECATED 1
++#define HAVE_RSYNC_CONTIMEOUT 0
++#define HAVE_SYMVER_ASM_LABEL 0
++#define HAVE_SYMVER_GNU_ASM 0
++#define HAVE_VFP_ARGS 0
++#define HAVE_XFORM_ASM 0
++#define HAVE_XMM_CLOBBERS 0
++#define HAVE_KCMVIDEOCODECTYPE_HEVC 0
++#define HAVE_KCMVIDEOCODECTYPE_HEVCWITHALPHA 0
++#define HAVE_KCMVIDEOCODECTYPE_VP9 0
++#define HAVE_KCVPIXELFORMATTYPE_420YPCBCR10BIPLANARVIDEORANGE 0
++#define HAVE_KCVPIXELFORMATTYPE_422YPCBCR8BIPLANARVIDEORANGE 0
++#define HAVE_KCVPIXELFORMATTYPE_422YPCBCR10BIPLANARVIDEORANGE 0
++#define HAVE_KCVPIXELFORMATTYPE_422YPCBCR16BIPLANARVIDEORANGE 0
++#define HAVE_KCVPIXELFORMATTYPE_444YPCBCR8BIPLANARVIDEORANGE 0
++#define HAVE_KCVPIXELFORMATTYPE_444YPCBCR10BIPLANARVIDEORANGE 0
++#define HAVE_KCVPIXELFORMATTYPE_444YPCBCR16BIPLANARVIDEORANGE 0
++#define HAVE_KCVIMAGEBUFFERTRANSFERFUNCTION_SMPTE_ST_2084_PQ 0
++#define HAVE_KCVIMAGEBUFFERTRANSFERFUNCTION_ITU_R_2100_HLG 0
++#define HAVE_KCVIMAGEBUFFERTRANSFERFUNCTION_LINEAR 0
++#define HAVE_KCVIMAGEBUFFERYCBCRMATRIX_ITU_R_2020 0
++#define HAVE_KCVIMAGEBUFFERCOLORPRIMARIES_ITU_R_2020 0
++#define HAVE_KCVIMAGEBUFFERTRANSFERFUNCTION_ITU_R_2020 0
++#define HAVE_KCVIMAGEBUFFERTRANSFERFUNCTION_SMPTE_ST_428_1 0
++#define HAVE_SOCKLEN_T 1
++#define HAVE_STRUCT_ADDRINFO 1
++#define HAVE_STRUCT_GROUP_SOURCE_REQ 1
++#define HAVE_STRUCT_IP_MREQ_SOURCE 1
++#define HAVE_STRUCT_IPV6_MREQ 1
++#define HAVE_STRUCT_MSGHDR_MSG_FLAGS 0
++#define HAVE_STRUCT_POLLFD 1
++#define HAVE_STRUCT_RUSAGE_RU_MAXRSS 0
++#define HAVE_STRUCT_SCTP_EVENT_SUBSCRIBE 0
++#define HAVE_STRUCT_SOCKADDR_IN6 1
++#define HAVE_STRUCT_SOCKADDR_SA_LEN 0
++#define HAVE_STRUCT_SOCKADDR_STORAGE 1
++#define HAVE_STRUCT_STAT_ST_MTIM_TV_NSEC 0
++#define HAVE_STRUCT_V4L2_FRMIVALENUM_DISCRETE 0
++#define HAVE_GZIP 1
++#define HAVE_LIBDRM_GETFB2 0
++#define HAVE_MAKEINFO 0
++#define HAVE_MAKEINFO_HTML 0
++#define HAVE_OPENCL_D3D11 0
++#define HAVE_OPENCL_DRM_ARM 0
++#define HAVE_OPENCL_DRM_BEIGNET 0
++#define HAVE_OPENCL_DXVA2 0
++#define HAVE_OPENCL_VAAPI_BEIGNET 0
++#define HAVE_OPENCL_VAAPI_INTEL_MEDIA 0
++#define HAVE_PERL 1
++#define HAVE_POD2MAN 1
++#define HAVE_TEXI2HTML 0
++#define HAVE_XMLLINT 1
++#define HAVE_ZLIB_GZIP 0
++#define CONFIG_DOC 0
++#define CONFIG_HTMLPAGES 0
++#define CONFIG_MANPAGES 1
++#define CONFIG_PODPAGES 1
++#define CONFIG_TXTPAGES 0
++#define CONFIG_AVIO_LIST_DIR_EXAMPLE 1
++#define CONFIG_AVIO_READING_EXAMPLE 1
++#define CONFIG_DECODE_AUDIO_EXAMPLE 1
++#define CONFIG_DECODE_VIDEO_EXAMPLE 1
++#define CONFIG_DEMUXING_DECODING_EXAMPLE 0
++#define CONFIG_ENCODE_AUDIO_EXAMPLE 1
++#define CONFIG_ENCODE_VIDEO_EXAMPLE 1
++#define CONFIG_EXTRACT_MVS_EXAMPLE 0
++#define CONFIG_FILTER_AUDIO_EXAMPLE 0
++#define CONFIG_FILTERING_AUDIO_EXAMPLE 0
++#define CONFIG_FILTERING_VIDEO_EXAMPLE 0
++#define CONFIG_HTTP_MULTICLIENT_EXAMPLE 0
++#define CONFIG_HW_DECODE_EXAMPLE 0
++#define CONFIG_METADATA_EXAMPLE 0
++#define CONFIG_MUXING_EXAMPLE 0
++#define CONFIG_QSVDEC_EXAMPLE 0
++#define CONFIG_REMUXING_EXAMPLE 0
++#define CONFIG_RESAMPLING_AUDIO_EXAMPLE 0
++#define CONFIG_SCALING_VIDEO_EXAMPLE 0
++#define CONFIG_TRANSCODE_AAC_EXAMPLE 0
++#define CONFIG_TRANSCODING_EXAMPLE 0
++#define CONFIG_VAAPI_ENCODE_EXAMPLE 0
++#define CONFIG_VAAPI_TRANSCODE_EXAMPLE 0
++#define CONFIG_AVISYNTH 0
++#define CONFIG_FREI0R 0
++#define CONFIG_LIBCDIO 0
++#define CONFIG_LIBDAVS2 0
++#define CONFIG_LIBRUBBERBAND 0
++#define CONFIG_LIBVIDSTAB 0
++#define CONFIG_LIBX264 0
++#define CONFIG_LIBX265 0
++#define CONFIG_LIBXAVS 0
++#define CONFIG_LIBXAVS2 0
++#define CONFIG_LIBXVID 0
++#define CONFIG_DECKLINK 0
++#define CONFIG_LIBFDK_AAC 0
++#define CONFIG_LIBTLS 0
++#define CONFIG_GMP 0
++#define CONFIG_LIBARIBB24 0
++#define CONFIG_LIBLENSFUN 0
++#define CONFIG_LIBOPENCORE_AMRNB 0
++#define CONFIG_LIBOPENCORE_AMRWB 0
++#define CONFIG_LIBVO_AMRWBENC 0
++#define CONFIG_MBEDTLS 0
++#define CONFIG_RKMPP 0
++#define CONFIG_LIBSMBCLIENT 0
++#define CONFIG_CHROMAPRINT 0
++#define CONFIG_GCRYPT 0
++#define CONFIG_GNUTLS 0
++#define CONFIG_JNI 0
++#define CONFIG_LADSPA 0
++#define CONFIG_LCMS2 0
++#define CONFIG_LIBAOM 0
++#define CONFIG_LIBASS 0
++#define CONFIG_LIBBLURAY 0
++#define CONFIG_LIBBS2B 0
++#define CONFIG_LIBCACA 0
++#define CONFIG_LIBCELT 0
++#define CONFIG_LIBCODEC2 0
++#define CONFIG_LIBDAV1D 0
++#define CONFIG_LIBDC1394 0
++#define CONFIG_LIBDRM 0
++#define CONFIG_LIBFLITE 0
++#define CONFIG_LIBFONTCONFIG 0
++#define CONFIG_LIBFREETYPE 0
++#define CONFIG_LIBFRIBIDI 0
++#define CONFIG_LIBGLSLANG 0
++#define CONFIG_LIBGME 0
++#define CONFIG_LIBGSM 0
++#define CONFIG_LIBIEC61883 0
++#define CONFIG_LIBILBC 0
++#define CONFIG_LIBJACK 0
++#define CONFIG_LIBJXL 0
++#define CONFIG_LIBKLVANC 0
++#define CONFIG_LIBKVAZAAR 0
++#define CONFIG_LIBMODPLUG 0
++#define CONFIG_LIBMP3LAME 0
++#define CONFIG_LIBMYSOFA 0
++#define CONFIG_LIBOPENCV 0
++#define CONFIG_LIBOPENH264 0
++#define CONFIG_LIBOPENJPEG 0
++#define CONFIG_LIBOPENMPT 0
++#define CONFIG_LIBOPENVINO 0
++#define CONFIG_LIBOPUS 0
++#define CONFIG_LIBPLACEBO 0
++#define CONFIG_LIBPULSE 0
++#define CONFIG_LIBRABBITMQ 0
++#define CONFIG_LIBRAV1E 0
++#define CONFIG_LIBRIST 0
++#define CONFIG_LIBRSVG 0
++#define CONFIG_LIBRTMP 0
++#define CONFIG_LIBSHADERC 0
++#define CONFIG_LIBSHINE 0
++#define CONFIG_LIBSMBCLIENT 0
++#define CONFIG_LIBSNAPPY 0
++#define CONFIG_LIBSOXR 0
++#define CONFIG_LIBSPEEX 0
++#define CONFIG_LIBSRT 0
++#define CONFIG_LIBSSH 0
++#define CONFIG_LIBSVTAV1 0
++#define CONFIG_LIBTENSORFLOW 0
++#define CONFIG_LIBTESSERACT 0
++#define CONFIG_LIBTHEORA 0
++#define CONFIG_LIBTWOLAME 0
++#define CONFIG_LIBUAVS3D 0
++#define CONFIG_LIBV4L2 0
++#define CONFIG_LIBVMAF 0
++#define CONFIG_LIBVORBIS 0
++#define CONFIG_LIBVPX 0
++#define CONFIG_LIBWEBP 0
++#define CONFIG_LIBXML2 0
++#define CONFIG_LIBZIMG 0
++#define CONFIG_LIBZMQ 0
++#define CONFIG_LIBZVBI 0
++#define CONFIG_LV2 0
++#define CONFIG_MEDIACODEC 0
++#define CONFIG_OPENAL 0
++#define CONFIG_OPENGL 0
++#define CONFIG_OPENSSL 0
++#define CONFIG_POCKETSPHINX 0
++#define CONFIG_VAPOURSYNTH 0
++#define CONFIG_ALSA 0
++#define CONFIG_APPKIT 0
++#define CONFIG_AVFOUNDATION 0
++#define CONFIG_BZLIB 0
++#define CONFIG_COREIMAGE 0
++#define CONFIG_ICONV 0
++#define CONFIG_LIBXCB 0
++#define CONFIG_LIBXCB_SHM 0
++#define CONFIG_LIBXCB_SHAPE 0
++#define CONFIG_LIBXCB_XFIXES 0
++#define CONFIG_LZMA 0
++#define CONFIG_MEDIAFOUNDATION 0
++#define CONFIG_METAL 0
++#define CONFIG_SCHANNEL 0
++#define CONFIG_SDL2 0
++#define CONFIG_SECURETRANSPORT 0
++#define CONFIG_SNDIO 0
++#define CONFIG_XLIB 0
++#define CONFIG_ZLIB 0
++#define CONFIG_CUDA_NVCC 0
++#define CONFIG_CUDA_SDK 0
++#define CONFIG_LIBNPP 0
++#define CONFIG_LIBMFX 0
++#define CONFIG_MMAL 0
++#define CONFIG_OMX 0
++#define CONFIG_OPENCL 0
++#define CONFIG_AMF 0
++#define CONFIG_AUDIOTOOLBOX 0
++#define CONFIG_CRYSTALHD 0
++#define CONFIG_CUDA 0
++#define CONFIG_CUDA_LLVM 0
++#define CONFIG_CUVID 0
++#define CONFIG_D3D11VA 0
++#define CONFIG_DXVA2 0
++#define CONFIG_FFNVCODEC 0
++#define CONFIG_NVDEC 0
++#define CONFIG_NVENC 0
++#define CONFIG_VAAPI 0
++#define CONFIG_VDPAU 0
++#define CONFIG_VIDEOTOOLBOX 0
++#define CONFIG_VULKAN 0
++#define CONFIG_V4L2_M2M 0
++#define CONFIG_FTRAPV 0
++#define CONFIG_GRAY 0
++#define CONFIG_HARDCODED_TABLES 0
++#define CONFIG_OMX_RPI 0
++#define CONFIG_RUNTIME_CPUDETECT 1
++#define CONFIG_SAFE_BITSTREAM_READER 1
++#define CONFIG_SHARED 1
++#define CONFIG_SMALL 0
++#define CONFIG_STATIC 0
++#define CONFIG_SWSCALE_ALPHA 1
++#define CONFIG_GPL 0
++#define CONFIG_NONFREE 0
++#define CONFIG_VERSION3 0
++#define CONFIG_AVDEVICE 0
++#define CONFIG_AVFILTER 0
++#define CONFIG_SWSCALE 0
++#define CONFIG_POSTPROC 0
++#define CONFIG_AVFORMAT 0
++#define CONFIG_AVCODEC 1
++#define CONFIG_SWRESAMPLE 0
++#define CONFIG_AVUTIL 1
++#define CONFIG_FFPLAY 0
++#define CONFIG_FFPROBE 0
++#define CONFIG_FFMPEG 0
++#define CONFIG_DCT 0
++#define CONFIG_DWT 0
++#define CONFIG_ERROR_RESILIENCE 0
++#define CONFIG_FAAN 1
++#define CONFIG_FAST_UNALIGNED 1
++#define CONFIG_FFT 1
++#define CONFIG_LSP 0
++#define CONFIG_MDCT 0
++#define CONFIG_PIXELUTILS 0
++#define CONFIG_NETWORK 0
++#define CONFIG_RDFT 0
++#define CONFIG_AUTODETECT 0
++#define CONFIG_FONTCONFIG 0
++#define CONFIG_LARGE_TESTS 1
++#define CONFIG_LINUX_PERF 0
++#define CONFIG_MACOS_KPERF 0
++#define CONFIG_MEMORY_POISONING 0
++#define CONFIG_NEON_CLOBBER_TEST 0
++#define CONFIG_OSSFUZZ 0
++#define CONFIG_PIC 0
++#define CONFIG_PTX_COMPRESSION 0
++#define CONFIG_THUMB 0
++#define CONFIG_VALGRIND_BACKTRACE 0
++#define CONFIG_XMM_CLOBBER_TEST 0
++#define CONFIG_BSFS 0
++#define CONFIG_DECODERS 1
++#define CONFIG_ENCODERS 0
++#define CONFIG_HWACCELS 0
++#define CONFIG_PARSERS 1
++#define CONFIG_INDEVS 0
++#define CONFIG_OUTDEVS 0
++#define CONFIG_FILTERS 0
++#define CONFIG_DEMUXERS 0
++#define CONFIG_MUXERS 0
++#define CONFIG_PROTOCOLS 0
++#define CONFIG_AANDCTTABLES 0
++#define CONFIG_AC3DSP 0
++#define CONFIG_ADTS_HEADER 0
++#define CONFIG_ATSC_A53 0
++#define CONFIG_AUDIO_FRAME_QUEUE 0
++#define CONFIG_AUDIODSP 0
++#define CONFIG_BLOCKDSP 0
++#define CONFIG_BSWAPDSP 0
++#define CONFIG_CABAC 0
++#define CONFIG_CBS 0
++#define CONFIG_CBS_AV1 0
++#define CONFIG_CBS_H264 0
++#define CONFIG_CBS_H265 0
++#define CONFIG_CBS_JPEG 0
++#define CONFIG_CBS_MPEG2 0
++#define CONFIG_CBS_VP9 0
++#define CONFIG_DEFLATE_WRAPPER 0
++#define CONFIG_DIRAC_PARSE 0
++#define CONFIG_DNN 0
++#define CONFIG_DOVI_RPU 0
++#define CONFIG_DVPROFILE 0
++#define CONFIG_EXIF 0
++#define CONFIG_FAANDCT 1
++#define CONFIG_FAANIDCT 1
++#define CONFIG_FDCTDSP 1
++#define CONFIG_FLACDSP 1
++#define CONFIG_FMTCONVERT 0
++#define CONFIG_FRAME_THREAD_ENCODER 0
++#define CONFIG_G722DSP 0
++#define CONFIG_GOLOMB 0
++#define CONFIG_GPLV3 0
++#define CONFIG_H263DSP 0
++#define CONFIG_H264CHROMA 0
++#define CONFIG_H264DSP 0
++#define CONFIG_H264PARSE 0
++#define CONFIG_H264PRED 1
++#define CONFIG_H264QPEL 0
++#define CONFIG_HEVCPARSE 0
++#define CONFIG_HPELDSP 0
++#define CONFIG_HUFFMAN 0
++#define CONFIG_HUFFYUVDSP 0
++#define CONFIG_HUFFYUVENCDSP 0
++#define CONFIG_IDCTDSP 1
++#define CONFIG_IIRFILTER 0
++#define CONFIG_MDCT15 0
++#define CONFIG_INFLATE_WRAPPER 0
++#define CONFIG_INTRAX8 0
++#define CONFIG_ISO_MEDIA 0
++#define CONFIG_IVIDSP 0
++#define CONFIG_JPEGTABLES 0
++#define CONFIG_LGPLV3 0
++#define CONFIG_LIBX262 0
++#define CONFIG_LLAUDDSP 0
++#define CONFIG_LLVIDDSP 0
++#define CONFIG_LLVIDENCDSP 0
++#define CONFIG_LPC 0
++#define CONFIG_LZF 0
++#define CONFIG_ME_CMP 0
++#define CONFIG_MPEG_ER 0
++#define CONFIG_MPEGAUDIO 0
++#define CONFIG_MPEGAUDIODSP 0
++#define CONFIG_MPEGAUDIOHEADER 0
++#define CONFIG_MPEG4AUDIO 0
++#define CONFIG_MPEGVIDEO 0
++#define CONFIG_MPEGVIDEODEC 0
++#define CONFIG_MPEGVIDEOENC 0
++#define CONFIG_MSS34DSP 0
++#define CONFIG_PIXBLOCKDSP 0
++#define CONFIG_QPELDSP 0
++#define CONFIG_QSV 0
++#define CONFIG_QSVDEC 0
++#define CONFIG_QSVENC 0
++#define CONFIG_QSVVPP 0
++#define CONFIG_RANGECODER 0
++#define CONFIG_RIFFDEC 0
++#define CONFIG_RIFFENC 0
++#define CONFIG_RTPDEC 0
++#define CONFIG_RTPENC_CHAIN 0
++#define CONFIG_RV34DSP 0
++#define CONFIG_SCENE_SAD 0
++#define CONFIG_SINEWIN 0
++#define CONFIG_SNAPPY 0
++#define CONFIG_SRTP 0
++#define CONFIG_STARTCODE 0
++#define CONFIG_TEXTUREDSP 0
++#define CONFIG_TEXTUREDSPENC 0
++#define CONFIG_TPELDSP 0
++#define CONFIG_VAAPI_1 0
++#define CONFIG_VAAPI_ENCODE 0
++#define CONFIG_VC1DSP 0
++#define CONFIG_VIDEODSP 1
++#define CONFIG_VP3DSP 0
++#define CONFIG_VP56DSP 0
++#define CONFIG_VP8DSP 1
++#define CONFIG_WMA_FREQS 0
++#define CONFIG_WMV2DSP 0
++#endif /* FFMPEG_CONFIG_H */
+diff --git a/media/ffvpx/libavutil/avutil.symbols b/media/ffvpx/libavutil/avutil.symbols
+index 20a4ca246..a12de4c8f 100644
+--- a/media/ffvpx/libavutil/avutil.symbols
++++ b/media/ffvpx/libavutil/avutil.symbols
+@@ -298,7 +298,7 @@ avpriv_report_missing_feature
+ avpriv_request_sample
+ avpriv_scalarproduct_float_c
+ avpriv_set_systematic_pal2
+-#if defined(XP_WIN) && !defined(_ARM64_)
++#if defined(XP_WIN) && !defined(_ARM64_) && !defined(MOZ_WINDOWS_PHONE)
+ avpriv_emms_asm
+ #endif
+ avpriv_slicethread_create
+diff --git a/media/libpng/moz.build b/media/libpng/moz.build
+index 296eef0d5..690adf3ad 100644
+--- a/media/libpng/moz.build
++++ b/media/libpng/moz.build
+@@ -34,9 +34,11 @@ if CONFIG['CPU_ARCH'] in ('arm','aarch64'):
+         'arm/palette_neon_intrinsics.c'
+     ]
+ 
+-    SOURCES += [
+-        'arm/filter_neon.S'
+-    ]
++    # Only needed without the intrinsics; Windows (MSVC-style) targets have no GNU assembler
++    if CONFIG['OS_ARCH'] != 'WINNT':
++        SOURCES += [
++            'arm/filter_neon.S'
++        ]
+ 
+ if CONFIG['INTEL_ARCHITECTURE']:
+     DEFINES['MOZ_PNG_USE_INTEL_SSE'] = True
+diff --git a/media/libstagefright/system/core/liblog/logprint.c b/media/libstagefright/system/core/liblog/logprint.c
+index 6bdd8e0b3..141253a61 100644
+--- a/media/libstagefright/system/core/liblog/logprint.c
++++ b/media/libstagefright/system/core/liblog/logprint.c
+@@ -25,6 +25,11 @@
+ #include <string.h>
+ #include <assert.h>
+ #include <arpa/inet.h>
++#ifdef _WIN32
++/* io.h would clash with the stagefright shims built in the same unified file */
++int __cdecl _write(int fd, const void *buf, unsigned int count);
++#define write _write
++#endif
+ 
+ #include <log/logd.h>
+ #include <log/logprint.h>
+diff --git a/media/libwebp/dsp/moz.build b/media/libwebp/dsp/moz.build
+index 8a3fb2787..0f9ce7420 100644
+--- a/media/libwebp/dsp/moz.build
++++ b/media/libwebp/dsp/moz.build
+@@ -21,7 +21,7 @@ SOURCES += [
+     'yuv.c',
+ ]
+ 
+-if CONFIG['CPU_ARCH'] == 'arm' and CONFIG['BUILD_ARM_NEON']:
++if CONFIG['CPU_ARCH'] == 'arm' and (CONFIG['BUILD_ARM_NEON'] or CONFIG['OS_ARCH'] == 'WINNT'):
+     SOURCES += [
+         'alpha_processing_neon.c',
+         'cost_neon.c',
+@@ -38,6 +38,10 @@ if CONFIG['CPU_ARCH'] == 'arm' and CONFIG['BUILD_ARM_NEON']:
+     for f in SOURCES:
+       if f.endswith('neon.c'):
+         SOURCES[f].flags += CONFIG['NEON_FLAGS']
++        if CONFIG['OS_ARCH'] == 'WINNT':
++          # clang can't describe NEON register pairs in CodeView debug info on 32-bit ARM
++          # ("unknown codeview register D7_D8"), so these files go without it
++          SOURCES[f].flags += ['/clang:-g0']
+ elif CONFIG['CPU_ARCH'] == 'aarch64':
+     SOURCES += [
+         'alpha_processing_neon.c',
+diff --git a/old-configure.in b/old-configure.in
+index 624066e8c..45ac1903d 100644
+--- a/old-configure.in
++++ b/old-configure.in
+@@ -3188,6 +3188,9 @@ if test -n "$MOZ_LIBJPEG_TURBO" -a -n "$COMPILE_ENVIRONMENT"; then
+   WINNT:x86_64)
+     LIBJPEG_TURBO_ASFLAGS="-D__x86_64__ -DPIC -DWIN64 -DMSVC"
+   ;;
++  WINNT:arm)
++    dnl retrofox: no GNU assembler for Windows on ARM; plain C (jsimd_none)
++  ;;
+   *:arm)
+     LIBJPEG_TURBO_ASFLAGS="-march=armv7-a -mfpu=neon"
+   ;;
+diff --git a/python/mozbuild/mozbuild/frontend/gyp_reader.py b/python/mozbuild/mozbuild/frontend/gyp_reader.py
+index 5e95f4413..f284e3ae9 100644
+--- a/python/mozbuild/mozbuild/frontend/gyp_reader.py
++++ b/python/mozbuild/mozbuild/frontend/gyp_reader.py
+@@ -298,8 +298,10 @@ def read_from_gyp(config, path, output, vars, no_chromium, no_unified, action_ov
+                     # special-case includes of <(PRODUCT_DIR)/dist/ to match
+                     # handle_copies above. This is used for NSS' exports.
+                     include = '!/dist/include/' + include[len(product_dir_dist):]
+-                elif include.startswith(config.topobjdir):
+-                    # NSPR_INCLUDE_DIR gets passed into the NSS build this way.
++                elif os.path.normcase(include).startswith(os.path.normcase(config.topobjdir)):
++                    # NSPR_INCLUDE_DIR gets passed into the NSS build this way. (normcase:
++                    # Windows paths can differ in drive letter case, C:/ vs c:/, and then a
++                    # fresh objdir, where the directory doesn't exist yet, lost the include.)
+                     include = '!/' + mozpath.relpath(include, config.topobjdir)
+                 else:
+                   # moz.build expects all LOCAL_INCLUDES to exist, so ensure they do.
+diff --git a/toolkit/components/protobuf/src/google/protobuf/stubs/atomicops.h b/toolkit/components/protobuf/src/google/protobuf/stubs/atomicops.h
+index e30f34396..dbe4ba80f 100644
+--- a/toolkit/components/protobuf/src/google/protobuf/stubs/atomicops.h
++++ b/toolkit/components/protobuf/src/google/protobuf/stubs/atomicops.h
+@@ -1,4 +1,4 @@
+-// Protocol Buffers - Google's data interchange format
++﻿// Protocol Buffers - Google's data interchange format
+ // Copyright 2012 Google Inc.  All rights reserved.
+ // https://developers.google.com/protocol-buffers/
+ //
+@@ -125,7 +125,7 @@ Atomic32 Release_CompareAndSwap(volatile Atomic32* ptr,
+                                 Atomic32 old_value,
+                                 Atomic32 new_value);
+ 
+-#if defined(__MINGW32__) && defined(MemoryBarrier)
++#if (defined(__MINGW32__) || defined(_M_ARM)) && defined(MemoryBarrier)
+ #undef MemoryBarrier
+ #endif
+ void MemoryBarrier();
+diff --git a/toolkit/library/dependentlibs.py b/toolkit/library/dependentlibs.py
+index df8646862..faf7720d8 100644
+--- a/toolkit/library/dependentlibs.py
++++ b/toolkit/library/dependentlibs.py
+@@ -43,11 +43,16 @@ def dependentlibs_dumpbin(lib):
+     return deps
+ 
+ def dependentlibs_mingw_objdump(lib):
+-    proc = subprocess.Popen(['objdump', '-x', lib], stdout = subprocess.PIPE)
++    try:
++        proc = subprocess.Popen(['objdump', '-x', lib], stdout = subprocess.PIPE)
++    except OSError:
++        # clang-cl builds without MSVC or mingw tools have LLVM's
++        proc = subprocess.Popen(['llvm-objdump', '-x', lib], stdout = subprocess.PIPE)
+     deps = []
+     for line in proc.stdout:
+         line = line.decode(getpreferredencoding(False))
+-        match = re.match(r'\tDLL Name: (\S+)', line)
++        # GNU objdump indents with a tab, llvm-objdump with spaces
++        match = re.match(r'\s+DLL Name: (\S+)', line)
+         if match:
+             deps.append(match.group(1))
+     proc.wait()
+diff --git a/toolkit/library/libxul.mk b/toolkit/library/libxul.mk
+index 0636fcd40..bc1fd9a77 100644
+--- a/toolkit/library/libxul.mk
++++ b/toolkit/library/libxul.mk
+@@ -35,7 +35,8 @@ else
+ get_first_and_last = $(TOOLCHAIN_PREFIX)nm -g $1 | grep _NSModule$$ | grep -vw refptr | sort | sed -n 's/^.* _*\([^ ]*\)$$/\1/;1p;$$p'
+ endif
+ 
+-LOCAL_CHECKS = test "$$($(get_first_and_last) | xargs echo)" != "start_kPStaticModules_NSModule end_kPStaticModules_NSModule" && echo "NSModules are not ordered appropriately" && exit 1 || exit 0
++# paste, not xargs: msys2's xargs can fail to fork child processes
++LOCAL_CHECKS = test "$$($(get_first_and_last) | paste -sd " ")" != "start_kPStaticModules_NSModule end_kPStaticModules_NSModule" && echo "NSModules are not ordered appropriately" && exit 1 || exit 0
+ 
+ ifeq (Linux,$(OS_ARCH))
+ LOCAL_CHECKS += ; test "$$($(TOOLCHAIN_PREFIX)readelf -l $1 | awk '$1 == "LOAD" { t += 1 } END { print t }')" -le 1 && echo "Only one PT_LOAD segment" && exit 1 || exit 0
+diff --git a/toolkit/library/moz.build b/toolkit/library/moz.build
+index e32a1258b..e06a445c6 100644
+--- a/toolkit/library/moz.build
++++ b/toolkit/library/moz.build
+@@ -65,6 +65,14 @@ FORCE_STATIC_LIB = True
+ 
+ STATIC_LIBRARY_NAME = 'xul_s'
+ 
++if CONFIG['MOZ_WINDOWS_PHONE']:
++    # Correct vcall thunks for 32-bit ARM (clang's copies overwrite r1). They are COMDAT
++    # "pick any" and the linker keeps the first copy, so this object comes first.
++    # retrofox's scripts/vcall-thunks.py fills it in from the build's objects.
++    SOURCES += [
++        'RfxVcallThunks.cpp',
++    ]
++
+ SOURCES += [
+     'StaticXULComponentsStart.cpp',
+ ]
+diff --git a/toolkit/library/nsDllMain.cpp b/toolkit/library/nsDllMain.cpp
+index 36f1630bf..368b2e67b 100644
+--- a/toolkit/library/nsDllMain.cpp
++++ b/toolkit/library/nsDllMain.cpp
+@@ -20,7 +20,9 @@ BOOL APIENTRY DllMain(
+ {
+     switch( reason ) {
+         case DLL_PROCESS_ATTACH:
++#ifndef MOZ_WINDOWS_PHONE  // widget/retrofox has no toolkit object
+             nsToolkit::Startup((HINSTANCE)hModule);
++#endif
+             break;
+ 
+         case DLL_THREAD_ATTACH:
+@@ -30,7 +32,9 @@ BOOL APIENTRY DllMain(
+             break;
+     
+         case DLL_PROCESS_DETACH:
++#ifndef MOZ_WINDOWS_PHONE
+             nsToolkit::Shutdown();
++#endif
+             break;
+ 
+     }
+diff --git a/toolkit/moz.configure b/toolkit/moz.configure
+index 740f5f11b..a158301fb 100644
+--- a/toolkit/moz.configure
++++ b/toolkit/moz.configure
+@@ -197,9 +197,11 @@ set_config('PDF_SURFACE_FEATURE', pdf_surface_feature)
+ option(env='MOZ_INSTRUMENT_EVENT_LOOP',
+        help='Force-enable event loop instrumentation')
+ 
+-@depends('MOZ_INSTRUMENT_EVENT_LOOP', toolkit)
+-def instrument_event_loop(value, toolkit):
+-    if value or (toolkit in ('windows', 'gtk2', 'gtk3', 'cocoa') and value.origin == 'default'):
++@depends('MOZ_INSTRUMENT_EVENT_LOOP', toolkit, windows_phone)
++def instrument_event_loop(value, toolkit, windows_phone):
++    # The tracer's widget half lives in widget/windows, which the phone doesn't build
++    if value or (toolkit in ('windows', 'gtk2', 'gtk3', 'cocoa') and value.origin == 'default'
++                 and not windows_phone):
+         return True
+ 
+ set_config('MOZ_INSTRUMENT_EVENT_LOOP', instrument_event_loop)
+diff --git a/toolkit/xre/nsAppRunner.cpp b/toolkit/xre/nsAppRunner.cpp
+index 0ed2c3e6c..43df2a4fc 100644
+--- a/toolkit/xre/nsAppRunner.cpp
++++ b/toolkit/xre/nsAppRunner.cpp
+@@ -150,8 +150,10 @@
+ #include "nsThreadUtils.h"
+ #include <comdef.h>
+ #include <wbemidl.h>
++#ifndef MOZ_WINDOWS_PHONE
+ #include "WinUtils.h"
+ #endif
++#endif
+ 
+ #ifdef XP_MACOSX
+ #include "nsILocalFileMac.h"
+diff --git a/toolkit/xre/nsXREDirProvider.cpp b/toolkit/xre/nsXREDirProvider.cpp
+index e38cc4f35..53afbf7f0 100644
+--- a/toolkit/xre/nsXREDirProvider.cpp
++++ b/toolkit/xre/nsXREDirProvider.cpp
+@@ -20,6 +20,7 @@
+ #include "nsIToolkitChromeRegistry.h"
+ #include "nsIToolkitProfileService.h"
+ #include "nsIXULRuntime.h"
++#include "GeckoProfiler.h"
+ 
+ #include "nsAppDirectoryServiceDefs.h"
+ #include "nsDirectoryServiceDefs.h"
+diff --git a/widget/CompositorWidget.h b/widget/CompositorWidget.h
+index eb657ba7f..38729119d 100644
+--- a/widget/CompositorWidget.h
++++ b/widget/CompositorWidget.h
+@@ -40,7 +40,7 @@ class CompositorWidgetInitData;
+ class CompositorWidgetDelegate;
+ 
+ // Platforms that support out-of-process widgets.
+-#if defined(XP_WIN) || defined(MOZ_X11)
++#if (defined(XP_WIN) && !defined(MOZ_WINDOWS_PHONE)) || defined(MOZ_X11)
+ // CompositorWidgetParent should implement CompositorWidget and
+ // PCompositorWidgetParent.
+ class CompositorWidgetParent;
+diff --git a/widget/WidgetUtils.cpp b/widget/WidgetUtils.cpp
+index eeaa5e9c6..77359d10d 100644
+--- a/widget/WidgetUtils.cpp
++++ b/widget/WidgetUtils.cpp
+@@ -103,7 +103,9 @@ namespace widget {
+ uint32_t
+ WidgetUtils::IsTouchDeviceSupportPresent()
+ {
+-#ifdef XP_WIN
++#ifdef MOZ_WINDOWS_PHONE
++  return 1;  // the phone's screen
++#elif defined(XP_WIN)
+   return WinUtils::IsTouchDeviceSupportPresent();
+ #elif MOZ_WIDGET_GTK == 3
+   return WidgetUtilsGTK::IsTouchDeviceSupportPresent();
+@@ -116,7 +118,14 @@ WidgetUtils::IsTouchDeviceSupportPresent()
+ void
+ WidgetUtils::GetPointerCapabilities(PointerCapabilities& aCaps)
+ {
+-#ifdef XP_WIN
++#ifdef MOZ_WINDOWS_PHONE
++  // A touchscreen and nothing else
++  aCaps.haveCoarsePointer = true;
++  aCaps.haveFinePointer = false;
++  aCaps.haveHoverCapablePointer = false;
++  aCaps.haveHoverIncapablePointer = true;
++  aCaps.haveTouchscreen = true;
++#elif defined(XP_WIN)
+   WinUtils::GetPointerCapabilities(aCaps);
+ #elif MOZ_WIDGET_GTK == 3
+   WidgetUtilsGTK::GetPointerCapabilities(aCaps);
+diff --git a/widget/moz.build b/widget/moz.build
+index ae18ff313..8c5fec3a2 100644
+--- a/widget/moz.build
++++ b/widget/moz.build
+@@ -254,7 +254,7 @@ LOCAL_INCLUDES += [
+     '/widget',
+ ]
+ 
+-if toolkit == 'windows':
++if toolkit == 'windows' and not CONFIG['MOZ_WINDOWS_PHONE']:
+     IPDL_SOURCES = [
+         'windows/PCompositorWidget.ipdl',
+         'windows/PlatformWidgetTypes.ipdlh',
+diff --git a/widget/retrofox/RetrofoxFrame.h b/widget/retrofox/RetrofoxFrame.h
+index c05c2fb40..ee038605b 100644
+--- a/widget/retrofox/RetrofoxFrame.h
++++ b/widget/retrofox/RetrofoxFrame.h
+@@ -38,6 +38,9 @@ enum RetrofoxPointerAction { eRetrofoxPointerDown, eRetrofoxPointerMove, eRetrof
+ void DispatchRetrofoxPointer(RetrofoxPointerAction aAction, int32_t aX, int32_t aY);
+ // Scrolls by (aDX, aDY) device pixels at the last pointer position; positive aDY scrolls down.
+ void DispatchRetrofoxScroll(int32_t aDX, int32_t aDY);
++// Moves that position without telling the page (where a pan starts, so it scrolls what is under
++// the finger rather than what was last tapped).
++void SetRetrofoxPointerPosition(int32_t aX, int32_t aY);
+ // A Windows virtual-key code (VK_BACK, VK_RETURN, ...): keydown, keypress, keyup.
+ void DispatchRetrofoxKey(uint32_t aVirtualKey);
+ // Typed text (UTF-16), one keypress per character.
+diff --git a/widget/retrofox/nsAppShell.cpp b/widget/retrofox/nsAppShell.cpp
+index a81fed1cc..3d0a69fc1 100644
+--- a/widget/retrofox/nsAppShell.cpp
++++ b/widget/retrofox/nsAppShell.cpp
+@@ -5,6 +5,14 @@
+ 
+ #include "nsAppShell.h"
+ 
++namespace mozilla {
++namespace widget {
++// The window message that wakes widget/windows' app shell. ipc/glue's Windows message loop
++// watches for it; there are no window messages here, so it never matches.
++UINT sAppShellGeckoMsgId = 0;
++} // namespace widget
++} // namespace mozilla
++
+ nsAppShell::nsAppShell()
+   : mWakeEvent(nullptr)
+ {
+diff --git a/widget/retrofox/nsWindow.cpp b/widget/retrofox/nsWindow.cpp
+index 0ce4d80e0..987eeaa30 100644
+--- a/widget/retrofox/nsWindow.cpp
++++ b/widget/retrofox/nsWindow.cpp
+@@ -9,6 +9,8 @@
+ #include "mozilla/BasicEvents.h"
+ #include "mozilla/MouseEvents.h"
+ #include "mozilla/TextEvents.h"
++#include "mozilla/TouchEvents.h"
++#include "mozilla/dom/Touch.h"
+ #include "nsIDOMWheelEvent.h"
+ #include "prinrval.h"
+ #include "mozilla/gfx/2D.h"
+@@ -439,6 +441,17 @@ DispatchRetrofoxPointer(RetrofoxPointerAction aAction, int32_t aX, int32_t aY)
+   if (!target) {
+     return;
+   }
++  // The page sees a touchscreen (dom.w3c_touch_events), so it gets touch events first; mouse
++  // events follow for pages that only listen to those
++  EventMessage touch = aAction == eRetrofoxPointerDown ? eTouchStart :
++                       aAction == eRetrofoxPointerUp ? eTouchEnd : eTouchMove;
++  WidgetTouchEvent touchEvent(true, touch, target);
++  touchEvent.mTime = PR_IntervalNow();
++  touchEvent.mTouches.AppendElement(
++    new dom::Touch(0, pt, LayoutDeviceIntPoint(1, 1), 0.0f, 1.0f));
++  nsEventStatus touchStatus;
++  target->DispatchEvent(&touchEvent, touchStatus);
++
+   // A tap is move + down + up, like widget/uikit
+   EventMessage messages[2] = { eMouseMove, eVoidEvent };
+   if (aAction == eRetrofoxPointerDown) {
+@@ -461,6 +474,12 @@ DispatchRetrofoxPointer(RetrofoxPointerAction aAction, int32_t aX, int32_t aY)
+   }
+ }
+ 
++void
++SetRetrofoxPointerPosition(int32_t aX, int32_t aY)
++{
++  sLastPointer = LayoutDeviceIntPoint(aX, aY);
++}
++
+ void
+ DispatchRetrofoxScroll(int32_t aDX, int32_t aDY)
+ {
+diff --git a/widget/retrofox/nsWindow.h b/widget/retrofox/nsWindow.h
+index b8badd276..5f2a4b819 100644
+--- a/widget/retrofox/nsWindow.h
++++ b/widget/retrofox/nsWindow.h
+@@ -47,6 +47,18 @@ public:
+ 
+   virtual float GetDPI() override { return 217.0f; }  // Lumia: 4.3", 480x800
+   virtual double GetDefaultScaleInternal() override;
++  // navigator.maxTouchPoints: the Lumia's screen takes several fingers
++  virtual uint32_t GetMaxTouchPoints() const override { return 5; }
++  // (pointer: coarse), (hover: none): a touchscreen and nothing else (nsBaseWidget assumes a
++  // mouse)
++  virtual void GetPointerCapabilities(mozilla::widget::PointerCapabilities& aCaps) const override
++  {
++    aCaps.haveCoarsePointer = true;
++    aCaps.haveFinePointer = false;
++    aCaps.haveHoverCapablePointer = false;
++    aCaps.haveHoverIncapablePointer = true;
++    aCaps.haveTouchscreen = true;
++  }
+ 
+   NS_IMETHOD SetTitle(const nsAString& aTitle) override { return NS_OK; }
+ 
+diff --git a/gfx/skia/skia/src/ports/SkScalerContext_win_dw.cpp b/gfx/skia/skia/src/ports/SkScalerContext_win_dw.cpp
+index d050cb069..efa290427 100644
+--- a/gfx/skia/skia/src/ports/SkScalerContext_win_dw.cpp
++++ b/gfx/skia/skia/src/ports/SkScalerContext_win_dw.cpp
+@@ -337,6 +337,15 @@ SkScalerContext_DW::SkScalerContext_DW(DWriteFontTypeface* typeface,
+             fRenderingMode = DWRITE_RENDERING_MODE_CLEARTYPE_NATURAL_SYMMETRIC;
+         }
+ 
++#ifdef MOZ_WINDOWS_PHONE
++        // The recommendation follows the font's gasp table, which turns smoothing off at text
++        // sizes in fonts like Arial, Times New Roman and Trebuchet MS (17 px and under): jagged
++        // text, unlike the phone's own text and IE's. Aliased text was asked for above if wanted.
++        if (fRenderingMode == DWRITE_RENDERING_MODE_ALIASED) {
++            fRenderingMode = DWRITE_RENDERING_MODE_CLEARTYPE_NATURAL_SYMMETRIC;
++        }
++#endif
++
+         // We don't support outline mode right now.
+         if (fRenderingMode == DWRITE_RENDERING_MODE_OUTLINE) {
+             fRenderingMode = DWRITE_RENDERING_MODE_CLEARTYPE_NATURAL_SYMMETRIC;
+diff --git a/gfx/thebes/gfxWindowsPlatform.cpp b/gfx/thebes/gfxWindowsPlatform.cpp
+index 9e01fb4f9..da1cdb058 100755
+--- a/gfx/thebes/gfxWindowsPlatform.cpp
++++ b/gfx/thebes/gfxWindowsPlatform.cpp
+@@ -647,6 +647,12 @@ gfxWindowsPlatform::GetCommonFallbackFonts(uint32_t aCh, uint32_t aNextCh,
+ 
+         switch (b) {
+         case 0x05:
++            // Armenian: none of the fonts below (nor Sylfaen or Arial Unicode MS, the usual
++            // choices) has it, so the search through every font settled on one whose gasp table
++            // turns smoothing off at text sizes (Times New Roman). Segoe UI has it.
++            if (aCh >= 0x0530 && aCh <= 0x058f) {
++                aFontList.AppendElement(kFontSegoeUI);
++            }
+             aFontList.AppendElement(kFontEstrangeloEdessa);
+             aFontList.AppendElement(kFontCambria);
+             break;

@@ -1,0 +1,21 @@
+# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+# rfxengine.exe: Gecko for the Retrofox phone app (retrofox, Windows Phone 8.1).
+# Lives at retrofox/rfxengine in the UXP tree (copied by scripts/sync-overlay.sh).
+# The program only starts the engine, which is in libxul (lib/).
+
+DIRS += ['lib']
+
+GeckoProgram('rfxengine', linkage='dependent')
+
+SOURCES += [
+    'main.cpp',
+]
+
+# The watchdog (main.cpp) restarts the engine in a child process and never needs Gecko itself
+DELAYLOAD_DLLS += [
+    'xul.dll',
+]

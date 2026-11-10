@@ -1,0 +1,114 @@
+diff --git a/gfx/qcms/moz.build b/gfx/qcms/moz.build
+index 9bcbbe6..3ff14ef 100644
+--- a/gfx/qcms/moz.build
++++ b/gfx/qcms/moz.build
+@@ -39,7 +39,8 @@ elif CONFIG['HAVE_ALTIVEC']:
+ 
+ if use_sse1:
+     SOURCES += ['transform-sse1.c']
+-    SOURCES['transform-sse1.c'].flags += CONFIG['SSE_FLAGS']
++    # retrofox: current clang implements the MMX-era intrinsics this file uses with SSE2
++    SOURCES['transform-sse1.c'].flags += CONFIG['SSE2_FLAGS'] if CONFIG['CLANG_CL'] else CONFIG['SSE_FLAGS']
+ 
+ if use_sse2:
+     SOURCES += ['transform-sse2.c']
+diff --git a/xpcom/reflect/xptcall/md/win32/moz.build b/xpcom/reflect/xptcall/md/win32/moz.build
+index 9bd624f..5ec74cc 100644
+--- a/xpcom/reflect/xptcall/md/win32/moz.build
++++ b/xpcom/reflect/xptcall/md/win32/moz.build
+@@ -29,11 +29,16 @@ elif CONFIG['TARGET_CPU'] == 'arm':
+         'xptcstubs_arm_win.cpp',
+     ]
+ else:
+-    if CONFIG['GNU_CXX']:
++    # retrofox: clang-cl (the desktop test build) takes the GNU-style sources too: the MSVC ones
++    # need MASM, and their stubs' AT&T inline assembly wants -masm=att under clang-cl
++    if CONFIG['GNU_CXX'] or CONFIG['CLANG_CL']:
+         SOURCES += [
+             'xptcinvoke_x86_gnu.cpp',
+             'xptcstubs.cpp',
+         ]
++        if CONFIG['CLANG_CL']:
++            SOURCES['xptcstubs.cpp'].flags += ['-clang:-masm=att']
++            SOURCES['xptcinvoke_x86_gnu.cpp'].flags += ['-clang:-masm=att']
+     else:
+         SOURCES += [
+             'xptcinvoke.cpp',
+diff --git a/security/moz.build b/security/moz.build
+index 191080e27..c11bde3e5 100644
+--- a/security/moz.build
++++ b/security/moz.build
+@@ -77,7 +77,9 @@ gyp_vars['nspr_lib_dir'] = CONFIG['NSPR_LIB_DIR']
+ # setting that would be harmful, but we already have this information
+ # anyway.
+ gyp_vars['NSS_DISABLE_AVX2'] = 1
+-if CONFIG['CLANG_CXX']:
++# retrofox: clang-cl counts too on x86 (the desktop test build), where freebl's MASM files and
++# the hardware AES code that needs them are then left out
++if CONFIG['CLANG_CXX'] or (CONFIG['CLANG_CL'] and CONFIG['CPU_ARCH'] == 'x86'):
+     gyp_vars['cc_is_clang'] = 1
+ gyp_vars['disable_crypto_vsx'] = 1
+ 
+diff --git a/security/nss/lib/freebl/freebl_base.gypi b/security/nss/lib/freebl/freebl_base.gypi
+index 34b6b3c81..e9e95fa9d 100644
+--- a/security/nss/lib/freebl/freebl_base.gypi
++++ b/security/nss/lib/freebl/freebl_base.gypi
+@@ -122,6 +122,11 @@
+         [ 'cc_use_gnu_ld!=1 and target_arch=="ia32"', {
+           'sources': [
+             'mpi/mpi_x86_asm.c',
++          ],
++        }],
++        # retrofox: no MASM for the clang-cl desktop test build (portable AES there)
++        [ 'cc_use_gnu_ld!=1 and target_arch=="ia32" and cc_is_clang!=1', {
++          'sources': [
+             'intel-aes-x86-masm.asm',
+             'intel-gcm-x86-masm.asm',
+           ],
+diff --git a/xpcom/reflect/xptcall/md/win32/xptcinvoke_x86_gnu.cpp b/xpcom/reflect/xptcall/md/win32/xptcinvoke_x86_gnu.cpp
+index 0e73e99f3..7c113265c 100644
+--- a/xpcom/reflect/xptcall/md/win32/xptcinvoke_x86_gnu.cpp
++++ b/xpcom/reflect/xptcall/md/win32/xptcinvoke_x86_gnu.cpp
+@@ -59,6 +59,14 @@ invoke_copy_to_stack(uint32_t paramCount, nsXPTCVariant* s, uint32_t* d)
+ 
+ */
+ 
++/* retrofox: clang-cl's linker (lld) takes export names in an object's own directives as the exact
++ * symbol name, which on x86 carries the C underscore (MSVC writes it that way too) */
++#ifdef _MSC_VER
++#define RFX_INVOKE_EXPORT " -export:_NS_InvokeByIndex"
++#else
++#define RFX_INVOKE_EXPORT " -export:NS_InvokeByIndex"
++#endif
++
+ __asm__ (
+ 	".text\n\t"
+ /* alignment here seems unimportant here; this was 16, now it's 2 which
+@@ -101,6 +109,6 @@ __asm__ (
+ 	"popl  %ebp\n\t"
+ 	"ret\n"
+ 	".section .drectve\n\t"
+-	".ascii \" -export:NS_InvokeByIndex\"\n\t"
++	".ascii \"" RFX_INVOKE_EXPORT "\"\n\t"
+ 	".text\n\t"
+ );
+diff --git a/security/nss/lib/freebl/freebl.gyp b/security/nss/lib/freebl/freebl.gyp
+index ecc5038..36de886 100644
+--- a/security/nss/lib/freebl/freebl.gyp
++++ b/security/nss/lib/freebl/freebl.gyp
+@@ -785,6 +785,15 @@
+               'MP_ASSEMBLY_DIV_2DX1D',
+               'MP_USE_UINT_DIGIT',
+               'MP_NO_MP_WORD',
++            ],
++          },
++        },
++      }],
++      # retrofox: the hardware AES code needs the MASM files, left out under clang-cl
++      [ 'OS=="win" and target_arch=="ia32" and cc_is_clang!=1', {
++        'msvs_settings': {
++          'VCCLCompilerTool': {
++            'PreprocessorDefinitions': [
+               'USE_HW_AES',
+               'INTEL_GCM',
+             ],

@@ -1,0 +1,10 @@
+; Functions the phone's IPHLPAPI.DLL exports that WindowsPhoneCore.lib doesn't expose.
+; Verified on the Lumia with phone\probe\probe.exe. Merged into build\lib\kernel32.lib.
+LIBRARY IPHLPAPI.DLL
+EXPORTS
+    GetAdaptersAddresses
+    GetAdaptersInfo
+    GetIpAddrTable
+    GetIpForwardTable
+    GetIpNetTable
+    NotifyAddrChange

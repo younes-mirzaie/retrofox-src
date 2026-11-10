@@ -1,0 +1,6 @@
+; Functions the phone's WINTRUST.DLL exports that WindowsPhoneCore.lib doesn't expose.
+; Verified on the Lumia with phone\probe\probe.exe. Merged into build\lib\kernel32.lib.
+LIBRARY WINTRUST.DLL
+EXPORTS
+    WinVerifyTrust
+    WTHelperProvDataFromStateData

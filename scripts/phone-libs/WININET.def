@@ -1,0 +1,6 @@
+; Functions the phone's WININET.DLL exports that WindowsPhoneCore.lib doesn't expose.
+; Verified on the Lumia with phone\probe\probe.exe. Merged into build\lib\kernel32.lib.
+LIBRARY WININET.DLL
+EXPORTS
+    InternetGetConnectedStateExW
+    InternetQueryOptionW

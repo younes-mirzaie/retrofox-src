@@ -1,0 +1,424 @@
+diff --git a/layout/base/ActiveLayerTracker.cpp b/layout/base/ActiveLayerTracker.cpp
+index ecee4897a..5e2b7db6e 100644
+--- a/layout/base/ActiveLayerTracker.cpp
++++ b/layout/base/ActiveLayerTracker.cpp
+@@ -252,7 +252,7 @@ static void
+ IncrementScaleRestyleCountIfNeeded(nsIFrame* aFrame, LayerActivity* aActivity)
+ {
+   const nsStyleDisplay* display = aFrame->StyleDisplay();
+-  if (!display->mSpecifiedTransform) {
++  if (!display->mCombinedTransform) {
+     // The transform was removed.
+     aActivity->mPreviousTransformScale = Nothing();
+     IncrementMutationCount(&aActivity->mRestyleCounts[LayerActivity::ACTIVITY_SCALE]);
+@@ -265,7 +265,7 @@ IncrementScaleRestyleCountIfNeeded(nsIFrame* aFrame, LayerActivity* aActivity)
+   bool dummyBool;
+   nsStyleTransformMatrix::TransformReferenceBox refBox(aFrame);
+   Matrix4x4 transform =
+-    nsStyleTransformMatrix::ReadTransforms(display->mSpecifiedTransform->mHead,
++    nsStyleTransformMatrix::ReadTransforms(display->mCombinedTransform->mHead,
+                                            aFrame->StyleContext(),
+                                            presContext,
+                                            dummy, refBox,
+diff --git a/layout/base/nsDisplayList.cpp b/layout/base/nsDisplayList.cpp
+index 766a3fa3e..761553e41 100644
+--- a/layout/base/nsDisplayList.cpp
++++ b/layout/base/nsDisplayList.cpp
+@@ -5971,7 +5971,7 @@ nsDisplayTransform::FrameTransformProperties::FrameTransformProperties(const nsI
+                                                                        float aAppUnitsPerPixel,
+                                                                        const nsRect* aBoundsOverride)
+   : mFrame(aFrame)
+-  , mTransformList(aFrame->StyleDisplay()->mSpecifiedTransform)
++  , mTransformList(aFrame->StyleDisplay()->mCombinedTransform)
+   , mToTransformOrigin(GetDeltaToTransformOrigin(aFrame, aAppUnitsPerPixel, aBoundsOverride))
+ {
+ }
+diff --git a/layout/style/StyleAnimationValue.cpp b/layout/style/StyleAnimationValue.cpp
+index 68e6d05f0..25e68e4d2 100644
+--- a/layout/style/StyleAnimationValue.cpp
++++ b/layout/style/StyleAnimationValue.cpp
+@@ -4436,14 +4436,22 @@ StyleAnimationValue::ExtractComputedValue(nsCSSPropertyID aProperty,
+           break;
+         }
+ 
+-        case eCSSProperty_transform: {
++        case eCSSProperty_transform:
++        case eCSSProperty_translate:
++        case eCSSProperty_rotate:
++        case eCSSProperty_scale: {
+           const nsStyleDisplay *display =
+             static_cast<const nsStyleDisplay*>(styleStruct);
++          const nsCSSValueSharedList* specified =
++            aProperty == eCSSProperty_translate ? display->mSpecifiedTranslate.get() :
++            aProperty == eCSSProperty_rotate ? display->mSpecifiedRotate.get() :
++            aProperty == eCSSProperty_scale ? display->mSpecifiedScale.get() :
++            display->mSpecifiedTransform.get();
+           nsAutoPtr<nsCSSValueList> result;
+-          if (display->mSpecifiedTransform) {
++          if (specified) {
+             // Clone, and convert all lengths (not percents) to pixels.
+             nsCSSValueList **resultTail = getter_Transfers(result);
+-            for (const nsCSSValueList *l = display->mSpecifiedTransform->mHead;
++            for (const nsCSSValueList *l = specified->mHead;
+                  l; l = l->mNext) {
+               nsCSSValueList *clone = new nsCSSValueList;
+               *resultTail = clone;
+diff --git a/layout/style/nsCSSParser.cpp b/layout/style/nsCSSParser.cpp
+index a99f3ea75..8fc9e5123 100644
+--- a/layout/style/nsCSSParser.cpp
++++ b/layout/style/nsCSSParser.cpp
+@@ -1434,6 +1434,7 @@ protected:
+   bool ParseMarginInline();
+   bool ParseClipPath(nsCSSValue& aValue);
+   bool ParseTransform(bool aIsPrefixed, bool aDisallowRelativeValues = false);
++  bool ParseIndividualTransform(nsCSSPropertyID aPropID);
+   bool ParseObjectPosition();
+   bool ParseOutline();
+   bool ParseOverflow();
+@@ -13394,6 +13395,10 @@ CSSParserImpl::ParsePropertyByFunction(nsCSSPropertyID aPropID)
+     return ParseWillChange();
+   case eCSSProperty_transform:
+     return ParseTransform(false);
++  case eCSSProperty_translate:
++  case eCSSProperty_rotate:
++  case eCSSProperty_scale:
++    return ParseIndividualTransform(aPropID);
+   case eCSSProperty__moz_transform:
+     return ParseTransform(true);
+   case eCSSProperty_transform_origin:
+@@ -18121,6 +18126,136 @@ CSSParserImpl::ParseTransform(bool aIsPrefixed, bool aDisallowRelativeValues)
+   return true;
+ }
+ 
++/* The individual transform properties (CSS Transforms 2), stored as a one-function transform
++ * list so they compute, animate and apply like transform:
++ *   translate: none | <length-percentage> [ <length-percentage> <length>? ]?   -> translate3d()
++ *   scale:     none | [ <number> | <percentage> ]{1,3}                          -> scale3d()
++ *   rotate:    none | <angle> | [ x | y | z | <number>{3} ] && <angle>          -> rotate()/rotate3d()
++ */
++bool
++CSSParserImpl::ParseIndividualTransform(nsCSSPropertyID aPropID)
++{
++  nsCSSValue value;
++  if (ParseSingleTokenVariant(value, VARIANT_INHERIT | VARIANT_NONE, nullptr)) {
++    AppendValue(aPropID, value);
++    return true;
++  }
++
++  nsCSSValue func;
++  if (aPropID == eCSSProperty_translate) {
++    nsCSSValue v[3];
++    if (ParseVariant(v[0], VARIANT_LPCALC, nullptr) != CSSParseResult::Ok) {
++      return false;
++    }
++    CSSParseResult r = ParseVariant(v[1], VARIANT_LPCALC, nullptr);
++    if (r == CSSParseResult::Error) {
++      return false;
++    }
++    if (r == CSSParseResult::Ok &&
++        ParseVariant(v[2], VARIANT_LCALC, nullptr) == CSSParseResult::Error) {
++      return false;
++    }
++    for (nsCSSValue& c : v) {
++      if (c.GetUnit() == eCSSUnit_Null) {
++        c.SetFloatValue(0.0f, eCSSUnit_Pixel);
++      }
++    }
++    RefPtr<nsCSSValue::Array> a = func.InitFunction(eCSSKeyword_translate3d, 3);
++    for (int i = 0; i < 3; ++i) {
++      a->Item(i + 1) = v[i];
++    }
++  } else if (aPropID == eCSSProperty_scale) {
++    float s[3];
++    int n = 0;
++    for (; n < 3; ++n) {
++      nsCSSValue c;
++      CSSParseResult r = ParseVariant(c, VARIANT_NUMBER | VARIANT_PERCENT, nullptr);
++      if (r == CSSParseResult::Error) {
++        return false;
++      }
++      if (r == CSSParseResult::NotFound) {
++        break;
++      }
++      s[n] = c.GetUnit() == eCSSUnit_Percent ? c.GetPercentValue() : c.GetFloatValue();
++    }
++    if (n == 0) {
++      return false;
++    }
++    if (n == 1) {
++      s[1] = s[0];
++    }
++    if (n < 3) {
++      s[2] = 1.0f;
++    }
++    RefPtr<nsCSSValue::Array> a = func.InitFunction(eCSSKeyword_scale3d, 3);
++    for (int i = 0; i < 3; ++i) {
++      a->Item(i + 1).SetFloatValue(s[i], eCSSUnit_Number);
++    }
++  } else {
++    // rotate: the angle and the axis, in either order
++    nsCSSValue angle;
++    float axis[3] = { 0, 0, 1 };
++    bool haveAxis = false;
++    for (int part = 0; part < 2; ++part) {
++      if (angle.GetUnit() == eCSSUnit_Null) {
++        CSSParseResult r = ParseVariant(angle, VARIANT_ANGLE | VARIANT_ZERO_ANGLE, nullptr);
++        if (r == CSSParseResult::Error) {
++          return false;
++        }
++        if (r == CSSParseResult::Ok) {
++          continue;
++        }
++      }
++      if (haveAxis || !GetToken(true)) {
++        break;
++      }
++      if (mToken.mType == eCSSToken_Ident &&
++          (mToken.mIdent.LowerCaseEqualsLiteral("x") ||
++           mToken.mIdent.LowerCaseEqualsLiteral("y") ||
++           mToken.mIdent.LowerCaseEqualsLiteral("z"))) {
++        char16_t c = ToLowerCase(mToken.mIdent[0]);
++        axis[0] = c == 'x';
++        axis[1] = c == 'y';
++        axis[2] = c == 'z';
++        haveAxis = true;
++        continue;
++      }
++      UngetToken();
++      for (int i = 0; i < 3; ++i) {
++        nsCSSValue c;
++        if (ParseVariant(c, VARIANT_NUMBER, nullptr) != CSSParseResult::Ok) {
++          return false;
++        }
++        axis[i] = c.GetFloatValue();
++      }
++      haveAxis = true;
++    }
++    if (angle.GetUnit() == eCSSUnit_Null) {
++      return false;
++    }
++    if (!haveAxis || (axis[0] == 0 && axis[1] == 0)) {
++      RefPtr<nsCSSValue::Array> a = func.InitFunction(eCSSKeyword_rotate, 1);
++      a->Item(1) = angle;
++    } else {
++      RefPtr<nsCSSValue::Array> a = func.InitFunction(eCSSKeyword_rotate3d, 4);
++      for (int i = 0; i < 3; ++i) {
++        a->Item(i + 1).SetFloatValue(axis[i], eCSSUnit_Number);
++      }
++      a->Item(4) = angle;
++    }
++  }
++
++  if (!CheckEndProperty()) {
++    return false;
++  }
++  nsCSSValueSharedList* list = new nsCSSValueSharedList;
++  value.SetSharedListValue(list);
++  list->mHead = new nsCSSValueList;
++  list->mHead->mValue = func;
++  AppendValue(aPropID, value);
++  return true;
++}
++
+ /* Reads a polygon function's argument list.
+  */
+ bool
+diff --git a/layout/style/nsCSSPropList.h b/layout/style/nsCSSPropList.h
+index 619026e69..bd27b3e46 100644
+--- a/layout/style/nsCSSPropList.h
++++ b/layout/style/nsCSSPropList.h
+@@ -4338,6 +4338,46 @@ CSS_PROP_DISPLAY(
+     nullptr,
+     offsetof(nsStyleDisplay, mSpecifiedTransform),
+     eStyleAnimType_Custom)
++// retrofox: the individual transform properties (CSS Transforms 2), applied before transform
++CSS_PROP_DISPLAY(
++    translate,
++    translate,
++    Translate,
++    CSS_PROPERTY_PARSE_FUNCTION |
++        CSS_PROPERTY_GETCS_NEEDS_LAYOUT_FLUSH |
++        CSS_PROPERTY_CREATES_STACKING_CONTEXT |
++        CSS_PROPERTY_FIXPOS_CB,
++    "",
++    0,
++    nullptr,
++    offsetof(nsStyleDisplay, mSpecifiedTranslate),
++    eStyleAnimType_Custom)
++CSS_PROP_DISPLAY(
++    rotate,
++    rotate,
++    Rotate,
++    CSS_PROPERTY_PARSE_FUNCTION |
++        CSS_PROPERTY_GETCS_NEEDS_LAYOUT_FLUSH |
++        CSS_PROPERTY_CREATES_STACKING_CONTEXT |
++        CSS_PROPERTY_FIXPOS_CB,
++    "",
++    0,
++    nullptr,
++    offsetof(nsStyleDisplay, mSpecifiedRotate),
++    eStyleAnimType_Custom)
++CSS_PROP_DISPLAY(
++    scale,
++    scale,
++    Scale,
++    CSS_PROPERTY_PARSE_FUNCTION |
++        CSS_PROPERTY_GETCS_NEEDS_LAYOUT_FLUSH |
++        CSS_PROPERTY_CREATES_STACKING_CONTEXT |
++        CSS_PROPERTY_FIXPOS_CB,
++    "",
++    0,
++    nullptr,
++    offsetof(nsStyleDisplay, mSpecifiedScale),
++    eStyleAnimType_Custom)
+ // This shorthand is essentially an alias, but it requires different
+ // parsing rules, and it therefore implemented as a shorthand.
+ CSS_PROP_SHORTHAND(
+diff --git a/layout/style/nsRuleNode.cpp b/layout/style/nsRuleNode.cpp
+index 64f91d0fc..f84c0e5ca 100644
+--- a/layout/style/nsRuleNode.cpp
++++ b/layout/style/nsRuleNode.cpp
+@@ -7374,6 +7374,41 @@ nsRuleNode::ComputeDisplayData(void* aStartStruct,
+     MOZ_ASSERT(false, "unrecognized transform unit");
+   }
+ 
++  // translate, rotate, scale: each a one-function list (nsCSSParser), computed like transform
++  auto computeIndividual = [&](const nsCSSValue* aValue,
++                               RefPtr<nsCSSValueSharedList> nsStyleDisplay::* aField) {
++    switch (aValue->GetUnit()) {
++    case eCSSUnit_Null:
++      break;
++    case eCSSUnit_Initial:
++    case eCSSUnit_Unset:
++    case eCSSUnit_Revert:
++    case eCSSUnit_None:
++      display->*aField = nullptr;
++      break;
++    case eCSSUnit_Inherit:
++      display->*aField = parentDisplay->*aField;
++      conditions.SetUncacheable();
++      break;
++    case eCSSUnit_SharedList: {
++      nsCSSValueSharedList* list = aValue->GetSharedListValue();
++      // none, from an animation
++      if (!list->mHead || list->mHead->mValue.GetUnit() == eCSSUnit_None) {
++        display->*aField = nullptr;
++      } else {
++        display->*aField = list;
++      }
++      break;
++    }
++    default:
++      MOZ_ASSERT(false, "unrecognized individual transform unit");
++    }
++  };
++  computeIndividual(aRuleData->ValueForTranslate(), &nsStyleDisplay::mSpecifiedTranslate);
++  computeIndividual(aRuleData->ValueForRotate(), &nsStyleDisplay::mSpecifiedRotate);
++  computeIndividual(aRuleData->ValueForScale(), &nsStyleDisplay::mSpecifiedScale);
++  display->UpdateCombinedTransform();
++
+   /* Convert the nsCSSValueList into a will-change bitfield for fast lookup */
+   const nsCSSValue* willChangeValue = aRuleData->ValueForWillChange();
+   switch (willChangeValue->GetUnit()) {
+diff --git a/layout/style/nsStyleStruct.cpp b/layout/style/nsStyleStruct.cpp
+index 18e7a3e77..8d1f63981 100644
+--- a/layout/style/nsStyleStruct.cpp
++++ b/layout/style/nsStyleStruct.cpp
+@@ -3059,6 +3059,10 @@ nsStyleDisplay::nsStyleDisplay(nsPresContext* aContext)
+   , mTransformStyle(NS_STYLE_TRANSFORM_STYLE_FLAT)
+   , mTransformBox(NS_STYLE_TRANSFORM_BOX_BORDER_BOX)
+   , mSpecifiedTransform(nullptr)
++  , mSpecifiedTranslate(nullptr)
++  , mSpecifiedRotate(nullptr)
++  , mSpecifiedScale(nullptr)
++  , mCombinedTransform(nullptr)
+   , mTransformOrigin{ {0.5f, eStyleUnit_Percent}, // Transform is centered on origin
+                       {0.5f, eStyleUnit_Percent},
+                       {0, nsStyleCoord::CoordConstructor} }
+@@ -3124,6 +3128,10 @@ nsStyleDisplay::nsStyleDisplay(const nsStyleDisplay& aSource)
+   , mTransformStyle(aSource.mTransformStyle)
+   , mTransformBox(aSource.mTransformBox)
+   , mSpecifiedTransform(aSource.mSpecifiedTransform)
++  , mSpecifiedTranslate(aSource.mSpecifiedTranslate)
++  , mSpecifiedRotate(aSource.mSpecifiedRotate)
++  , mSpecifiedScale(aSource.mSpecifiedScale)
++  , mCombinedTransform(aSource.mCombinedTransform)
+   , mTransformOrigin{ aSource.mTransformOrigin[0],
+                       aSource.mTransformOrigin[1],
+                       aSource.mTransformOrigin[2] }
+@@ -3150,6 +3158,28 @@ nsStyleDisplay::nsStyleDisplay(const nsStyleDisplay& aSource)
+   MOZ_COUNT_CTOR(nsStyleDisplay);
+ }
+ 
++void
++nsStyleDisplay::UpdateCombinedTransform()
++{
++  if (!mSpecifiedTranslate && !mSpecifiedRotate && !mSpecifiedScale) {
++    mCombinedTransform = mSpecifiedTransform;
++    return;
++  }
++  nsCSSValueList* head = nullptr;
++  nsCSSValueList** tail = &head;
++  const nsCSSValueSharedList* lists[] = { mSpecifiedTranslate, mSpecifiedRotate,
++                                          mSpecifiedScale, mSpecifiedTransform };
++  for (const nsCSSValueSharedList* list : lists) {
++    for (const nsCSSValueList* item = list ? list->mHead : nullptr; item; item = item->mNext) {
++      nsCSSValueList* copy = new nsCSSValueList;
++      copy->mValue = item->mValue;
++      *tail = copy;
++      tail = &copy->mNext;
++    }
++  }
++  mCombinedTransform = new nsCSSValueSharedList(head);
++}
++
+ nsChangeHint
+ nsStyleDisplay::CalcDifference(const nsStyleDisplay& aNewData) const
+ {
+@@ -3255,13 +3285,13 @@ nsStyleDisplay::CalcDifference(const nsStyleDisplay& aNewData) const
+      */
+     nsChangeHint transformHint = nsChangeHint(0);
+ 
+-    if (!mSpecifiedTransform != !aNewData.mSpecifiedTransform ||
+-        (mSpecifiedTransform &&
+-         *mSpecifiedTransform != *aNewData.mSpecifiedTransform)) {
++    if (!mCombinedTransform != !aNewData.mCombinedTransform ||
++        (mCombinedTransform &&
++         *mCombinedTransform != *aNewData.mCombinedTransform)) {
+       transformHint |= nsChangeHint_UpdateTransformLayer;
+ 
+-      if (mSpecifiedTransform &&
+-          aNewData.mSpecifiedTransform) {
++      if (mCombinedTransform &&
++          aNewData.mCombinedTransform) {
+         transformHint |= nsChangeHint_UpdatePostTransformOverflow;
+       } else {
+         transformHint |= nsChangeHint_UpdateOverflow;
+diff --git a/layout/style/nsStyleStruct.h b/layout/style/nsStyleStruct.h
+index d4a3381cb..0199a8f4e 100644
+--- a/layout/style/nsStyleStruct.h
++++ b/layout/style/nsStyleStruct.h
+@@ -2835,6 +2835,14 @@ struct MOZ_NEEDS_MEMMOVABLE_MEMBERS nsStyleDisplay
+   uint8_t mTransformStyle;
+   uint8_t mTransformBox;        // [reset] see nsStyleConsts.h
+   RefPtr<nsCSSValueSharedList> mSpecifiedTransform; // [reset]
++  // The individual transform properties (translate, rotate, scale), each a one-function
++  // transform list or null; and those with transform, in the order they apply (translate,
++  // rotate, scale, transform): what the frame's transform is built from. Null if none is set.
++  RefPtr<nsCSSValueSharedList> mSpecifiedTranslate; // [reset]
++  RefPtr<nsCSSValueSharedList> mSpecifiedRotate; // [reset]
++  RefPtr<nsCSSValueSharedList> mSpecifiedScale; // [reset]
++  RefPtr<nsCSSValueSharedList> mCombinedTransform; // [reset]
++  void UpdateCombinedTransform();
+   nsStyleCoord mTransformOrigin[3]; // [reset] percent, coord, calc, 3rd param is coord, calc only
+   nsStyleCoord mChildPerspective; // [reset] none, coord
+   nsStyleCoord mPerspectiveOrigin[2]; // [reset] percent, coord, calc
+@@ -2971,7 +2979,7 @@ struct MOZ_NEEDS_MEMMOVABLE_MEMBERS nsStyleDisplay
+   /* Returns whether the element has the -moz-transform property
+    * or a related property. */
+   bool HasTransformStyle() const {
+-    return mSpecifiedTransform != nullptr ||
++    return mCombinedTransform != nullptr ||
+            mTransformStyle == NS_STYLE_TRANSFORM_STYLE_PRESERVE_3D ||
+            (mWillChangeBitField & NS_STYLE_WILL_CHANGE_TRANSFORM);
+   }

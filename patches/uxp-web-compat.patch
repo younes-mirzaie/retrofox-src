@@ -1,0 +1,127 @@
+diff --git a/dom/html/HTMLImageElement.cpp b/dom/html/HTMLImageElement.cpp
+index 05bfa01e4..24d4257d3 100644
+--- a/dom/html/HTMLImageElement.cpp
++++ b/dom/html/HTMLImageElement.cpp
+@@ -42,6 +42,9 @@
+ 
+ #include "nsIDOMHTMLMapElement.h"
+ #include "mozilla/EventDispatcher.h"
++#include "mozilla/dom/Promise.h"
++#include "nsIDOMEvent.h"
++#include "nsIDOMEventListener.h"
+ #include "mozilla/EventStates.h"
+ #include "mozilla/net/ReferrerPolicy.h"
+ 
+@@ -193,6 +196,77 @@ HTMLImageElement::Draggable() const
+                       nsGkAtoms::_false, eIgnoreCase);
+ }
+ 
++namespace {
++
++// Settles one img.decode() promise on the image's next load or error event
++class ImageDecodeListener final : public nsIDOMEventListener
++{
++public:
++  NS_DECL_ISUPPORTS
++
++  ImageDecodeListener(HTMLImageElement* aImage, Promise* aPromise)
++    : mImage(aImage), mPromise(aPromise) {}
++
++  NS_IMETHOD HandleEvent(nsIDOMEvent* aEvent) override
++  {
++    RefPtr<ImageDecodeListener> kungFuDeathGrip = this;
++    mImage->RemoveSystemEventListener(NS_LITERAL_STRING("load"), this, false);
++    mImage->RemoveSystemEventListener(NS_LITERAL_STRING("error"), this, false);
++    nsAutoString type;
++    aEvent->GetType(type);
++    if (type.EqualsLiteral("load")) {
++      mPromise->MaybeResolveWithUndefined();
++    } else {
++      mPromise->MaybeReject(NS_ERROR_DOM_ENCODING_NOT_SUPPORTED_ERR);
++    }
++    return NS_OK;
++  }
++
++private:
++  ~ImageDecodeListener() {}
++
++  RefPtr<HTMLImageElement> mImage;
++  RefPtr<Promise> mPromise;
++};
++
++NS_IMPL_ISUPPORTS(ImageDecodeListener, nsIDOMEventListener)
++
++} // namespace
++
++// img.decode(): resolves once the image is available to draw, rejects (EncodingError) if it
++// can't be. Gecko decodes when it paints, so "available" is the load event (or already
++// complete with a size).
++already_AddRefed<Promise>
++HTMLImageElement::Decode(ErrorResult& aRv)
++{
++  nsCOMPtr<nsIGlobalObject> global = OwnerDoc()->GetScopeObject();
++  if (!global) {
++    aRv.Throw(NS_ERROR_UNEXPECTED);
++    return nullptr;
++  }
++  RefPtr<Promise> promise = Promise::Create(global, aRv);
++  if (aRv.Failed()) {
++    return nullptr;
++  }
++  if (!OwnerDoc()->IsCurrentActiveDocument()) {
++    promise->MaybeReject(NS_ERROR_DOM_ENCODING_NOT_SUPPORTED_ERR);
++    return promise.forget();
++  }
++  if (Complete()) {
++    if (NaturalWidth() > 0 || NaturalHeight() > 0) {
++      promise->MaybeResolveWithUndefined();
++    } else {
++      // no image, or a broken one
++      promise->MaybeReject(NS_ERROR_DOM_ENCODING_NOT_SUPPORTED_ERR);
++    }
++    return promise.forget();
++  }
++  RefPtr<ImageDecodeListener> listener = new ImageDecodeListener(this, promise);
++  AddSystemEventListener(NS_LITERAL_STRING("load"), listener, false);
++  AddSystemEventListener(NS_LITERAL_STRING("error"), listener, false);
++  return promise.forget();
++}
++
+ bool
+ HTMLImageElement::Complete()
+ {
+diff --git a/dom/html/HTMLImageElement.h b/dom/html/HTMLImageElement.h
+index d85f7cfb0..7e8fd791f 100644
+--- a/dom/html/HTMLImageElement.h
++++ b/dom/html/HTMLImageElement.h
+@@ -18,6 +18,8 @@ namespace mozilla {
+ class EventChainPreVisitor;
+ namespace dom {
+ 
++class Promise;
++
+ class ImageLoadTask;
+ 
+ class ResponsiveImageSelector;
+@@ -115,6 +117,7 @@ public:
+   uint32_t NaturalWidth();
+   uint32_t NaturalHeight();
+   bool Complete();
++  already_AddRefed<Promise> Decode(ErrorResult& aRv);
+   uint32_t Hspace()
+   {
+     return GetUnsignedIntAttr(nsGkAtoms::hspace, 0);
+diff --git a/dom/webidl/HTMLImageElement.webidl b/dom/webidl/HTMLImageElement.webidl
+index 46dcd897b..7563be38a 100644
+--- a/dom/webidl/HTMLImageElement.webidl
++++ b/dom/webidl/HTMLImageElement.webidl
+@@ -40,6 +40,9 @@ interface HTMLImageElement : HTMLElement {
+   readonly attribute unsigned long naturalWidth;
+   readonly attribute unsigned long naturalHeight;
+   readonly attribute boolean complete;
++  // retrofox: HTML's img.decode() (Firefox 68); sites wait on it before showing images
++  [Throws]
++  Promise<void> decode();
+ };
+ 
+ // http://www.whatwg.org/specs/web-apps/current-work/#other-elements,-attributes-and-apis

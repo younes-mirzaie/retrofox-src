@@ -1,0 +1,106 @@
+diff --git a/dom/media/MediaManager.cpp b/dom/media/MediaManager.cpp
+index abba54989..f4c0ddc49 100644
+--- a/dom/media/MediaManager.cpp
++++ b/dom/media/MediaManager.cpp
+@@ -96,7 +96,12 @@ const nsIID nsIMediaDevice::COMTypeInfo<mozilla::AudioDevice, void>::kIID = NS_I
+ namespace {
+ already_AddRefed<nsIAsyncShutdownClient> GetShutdownPhase() {
+   nsCOMPtr<nsIAsyncShutdownService> svc = mozilla::services::GetAsyncShutdown();
+-  MOZ_RELEASE_ASSERT(svc);
++  // retrofox: the async shutdown service is written in JS and needs OS.File, which needs
++  // js-ctypes; the phone and desktop builds have no ctypes, so it can be missing. The engine
++  // ends by exiting, so media just skips its shutdown blockers then.
++  if (!svc) {
++    return nullptr;
++  }
+ 
+   nsCOMPtr<nsIAsyncShutdownClient> shutdownPhase;
+   nsresult rv = svc->GetProfileBeforeChange(getter_AddRefs(shutdownPhase));
+@@ -1776,11 +1781,13 @@ MediaManager::Get() {
+     };
+ 
+     sSingleton->mShutdownBlocker = new Blocker();
+-    nsresult rv = shutdownPhase->AddBlocker(sSingleton->mShutdownBlocker,
+-                                            NS_LITERAL_STRING(__FILE__),
+-                                            __LINE__,
+-                                            NS_LITERAL_STRING("Media shutdown"));
+-    MOZ_RELEASE_ASSERT(NS_SUCCEEDED(rv));
++    if (shutdownPhase) {   // retrofox: may be missing (no js-ctypes, see GetShutdownPhase)
++      nsresult rv = shutdownPhase->AddBlocker(sSingleton->mShutdownBlocker,
++                                              NS_LITERAL_STRING(__FILE__),
++                                              __LINE__,
++                                              NS_LITERAL_STRING("Media shutdown"));
++      MOZ_RELEASE_ASSERT(NS_SUCCEEDED(rv));
++    }
+   }
+   return sSingleton;
+ }
+@@ -2838,7 +2845,9 @@ MediaManager::Shutdown()
+     // Remove async shutdown blocker
+ 
+     nsCOMPtr<nsIAsyncShutdownClient> shutdownPhase = GetShutdownPhase();
+-    shutdownPhase->RemoveBlocker(sSingleton->mShutdownBlocker);
++    if (shutdownPhase) {
++      shutdownPhase->RemoveBlocker(sSingleton->mShutdownBlocker);
++    }
+ 
+     // we hold a ref to 'that' which is the same as sSingleton
+     sSingleton = nullptr;
+diff --git a/dom/media/MediaShutdownManager.cpp b/dom/media/MediaShutdownManager.cpp
+index 930ece60b..5613bbe49 100644
+--- a/dom/media/MediaShutdownManager.cpp
++++ b/dom/media/MediaShutdownManager.cpp
+@@ -45,7 +45,12 @@ static nsCOMPtr<nsIAsyncShutdownClient>
+ GetShutdownBarrier()
+ {
+   nsCOMPtr<nsIAsyncShutdownService> svc = services::GetAsyncShutdown();
+-  MOZ_RELEASE_ASSERT(svc);
++  // retrofox: the async shutdown service is written in JS and needs OS.File, which needs
++  // js-ctypes; the phone and desktop builds have no ctypes, so it can be missing. The engine
++  // ends by exiting, so media just skips its shutdown blockers then.
++  if (!svc) {
++    return nullptr;
++  }
+ 
+   nsCOMPtr<nsIAsyncShutdownClient> barrier;
+   nsresult rv = svc->GetProfileBeforeChange(getter_AddRefs(barrier));
+@@ -71,7 +76,11 @@ MediaShutdownManager::InitStatics()
+   sInitDone = true;
+   sInstance = new MediaShutdownManager();
+ 
+-  nsresult rv = GetShutdownBarrier()->AddBlocker(
++  nsCOMPtr<nsIAsyncShutdownClient> barrier = GetShutdownBarrier();
++  if (!barrier) {
++    return;
++  }
++  nsresult rv = barrier->AddBlocker(
+     sInstance, NS_LITERAL_STRING(__FILE__), __LINE__,
+     NS_LITERAL_STRING("MediaShutdownManager shutdown"));
+   if (NS_FAILED(rv)) {
+@@ -85,7 +94,10 @@ MediaShutdownManager::RemoveBlocker()
+   MOZ_ASSERT(NS_IsMainThread());
+   MOZ_ASSERT(mIsDoingXPCOMShutDown);
+   MOZ_ASSERT(mDecoders.Count() == 0);
+-  GetShutdownBarrier()->RemoveBlocker(this);
++  nsCOMPtr<nsIAsyncShutdownClient> barrier = GetShutdownBarrier();
++  if (barrier) {
++    barrier->RemoveBlocker(this);
++  }
+   // Clear our singleton reference. This will probably delete
+   // this instance, so don't deref |this| clearing sInstance.
+   sInstance = nullptr;
+diff --git a/js/src/jit/AtomicOperations.h b/js/src/jit/AtomicOperations.h
+index 79cd420..d45dc55 100644
+--- a/js/src/jit/AtomicOperations.h
++++ b/js/src/jit/AtomicOperations.h
+@@ -346,6 +346,10 @@ AtomicOperations::isLockfree(int32_t size)
+    // 32-bit ARM without the JIT (Windows on ARM: retrofox). The "ppc" file is plain compiler
+    // __atomic builtins; ARMv7 does 8-byte atomics natively (ldrexd/strexd).
+ #  include "jit/none/AtomicOperations-ppc.h"
++# elif defined(__clang__) && (defined(_M_IX86) || defined(__i386__) || defined(_M_X64) || defined(__x86_64__))
++   // x86 without the JIT (retrofox's desktop test build, clang-cl): the same compiler __atomic
++   // builtins. The "none" file would crash on the first typed array access.
++#  include "jit/none/AtomicOperations-ppc.h"
+ # else
+ #  include "jit/none/AtomicOperations-none.h" // These MOZ_CRASH() always
+ # endif
