@@ -2,7 +2,7 @@
 
 A modern web engine for Windows Phone 8.1, based on Mozilla's Gecko and SpiderMonkey.
 
-Runs on any Windows Phone 8.1 device that is interop unlocked with CMD Injector. Developed and tested on a Nokia Lumia 820 (Snapdragon S4, 1 GB RAM, 480x800).
+Runs on any Windows Phone 8.1 device that is interop unlocked with CMD Injector. Developed and tested on a Nokia Lumia 820.
 
 retrofox is an independent community project. It is not affiliated with or endorsed by Mozilla, and it is not Firefox.
 
