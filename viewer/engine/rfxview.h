@@ -18,7 +18,7 @@
 namespace rfxview {
 
 enum : uint16_t {
-    kWelcome = 1, kFrame = 2, kState = 3, kFocus = 4, kScrollInfo = 5, kTabs = 6, kGesture = 7,
+    kWelcome = 1, kFrame = 2, kState = 3, kFocus = 4, kScrollInfo = 5, kTabs = 6, kGesture = 7, kStrip = 8, kFixed = 9,
     kHello = 100, kNavigate = 101, kCommand = 102, kPointer = 103,
     kScroll = 104, kKey = 105, kText = 106, kResize = 107, kFrameAck = 108, kLog = 109,
     kTab = 110
@@ -107,6 +107,16 @@ public:
     // Who handles the touch drag in progress: 0 no touch, 1 not decided, 2 the browser scrolls,
     // 3 the page handles it (the app stops moving the picture)
     void SendGesture(uint8_t gesture);
+    // A strip of the page outside the screen, drawn ahead of time so the app can show it at once
+    // while panning (STRIP): its place in the page (device pixels from the page's top left) and
+    // its BGRA pixels, rows packed
+    void SendStrip(int32_t pageX, int32_t pageY, int width, int height, const uint8_t* bgra);
+    // Where the page's fixed parts are on screen (position: fixed headers, bars), as x, y, w, h
+    // in surface pixels, so the app keeps them in place while it moves the page (FIXED). Sent when
+    // it changes.
+    void SendFixed(const std::vector<int32_t>& rects);
+    // Frames the app hasn't acknowledged yet (strips wait until it has caught up)
+    bool FramesInFlight() const { return mSerial != mAcked; }
     // Sends the scroll state if it changed, tagged with the frame that shows it (the frame
     // sent last, or the next one while changes are still waiting to go out).
     void SendScrollInfo(const ScrollInfo& info);
@@ -141,6 +151,8 @@ private:
     FrameSink* mSink = nullptr;
     double mSentAt[8] = {};     // when each recent frame went out (by serial % 8)
     ScrollInfo mScrollSent;
+    std::vector<int32_t> mFixedSent;
+    bool mFixedSentOnce = false;
     uint32_t mScrollSentSerial;
     std::string mError;
 };

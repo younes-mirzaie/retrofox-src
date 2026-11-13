@@ -1,0 +1,16 @@
+diff --git a/layout/generic/StickyScrollContainer.h b/layout/generic/StickyScrollContainer.h
+index 5d6d5b63e..e529ce87d 100644
+--- a/layout/generic/StickyScrollContainer.h
++++ b/layout/generic/StickyScrollContainer.h
+@@ -53,6 +53,11 @@ public:
+     return mScrollFrame;
+   }
+ 
++  // retrofox: the sticky frames, so the app can hold the stuck ones in place while it pans
++  const nsTArray<nsIFrame*>& Frames() const {
++    return mFrames;
++  }
++
+   // Compute the offsets for a sticky position element
+   static void ComputeStickyOffsets(nsIFrame* aFrame);
+ 

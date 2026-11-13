@@ -27,11 +27,30 @@
               PointerReleased="PageArea_PointerReleased"
               PointerCanceled="PageArea_PointerCanceled"
               PointerCaptureLost="PageArea_PointerCanceled">
+            <!-- The page just above and below the screen, drawn ahead by the engine (STRIP), so a
+                 pan shows page instead of blank while the next frame is drawn
+                 (MainPage.Strips.cs) -->
+            <Image x:Name="StripImageA" Stretch="Fill" HorizontalAlignment="Left" VerticalAlignment="Top"
+                   Visibility="Collapsed">
+                <Image.RenderTransform>
+                    <TranslateTransform x:Name="StripShiftA" />
+                </Image.RenderTransform>
+            </Image>
+            <Image x:Name="StripImageB" Stretch="Fill" HorizontalAlignment="Left" VerticalAlignment="Top"
+                   Visibility="Collapsed">
+                <Image.RenderTransform>
+                    <TranslateTransform x:Name="StripShiftB" />
+                </Image.RenderTransform>
+            </Image>
             <Image x:Name="PageImage" Stretch="Fill">
                 <Image.RenderTransform>
                     <TranslateTransform x:Name="PageShift" />
                 </Image.RenderTransform>
             </Image>
+            <!-- The page's fixed parts (position: fixed headers and bars), held in place while the
+                 page moves under them (FIXED) -->
+            <Canvas x:Name="FixedLayer" IsHitTestVisible="False" />
+
 
             <!-- Takes keyboard input for the page's text fields -->
             <TextBox x:Name="KeyboardSink" Width="2" Height="2" Opacity="0"
@@ -164,19 +183,19 @@
                              Foreground="{ThemeResource PhoneAccentBrush}" Background="Transparent" />
             </Grid>
 
-            <!-- The "..." menu, in IE's order; what doesn't apply to the page is dimmed -->
+            <!-- The "..." menu, in IE's order (Metro UI skill, section 7); what doesn't apply to the page is dimmed -->
             <StackPanel x:Name="MenuPanel" Visibility="Collapsed" Margin="0,2,0,14"
                         Background="Transparent" ManipulationMode="TranslateY"
                         ManipulationStarted="Bar_ManipulationStarted"
                         ManipulationDelta="Bar_ManipulationDelta"
                         ManipulationCompleted="Bar_ManipulationCompleted">
                 <TextBlock x:Name="MenuForward" Text="forward" Style="{StaticResource MenuItem}" Tapped="MenuForward_Tapped" />
+                <TextBlock Text="recent" Style="{StaticResource MenuItem}" Tapped="MenuRecent_Tapped" />
                 <TextBlock Text="favorites" Style="{StaticResource MenuItem}" Tapped="MenuFavorites_Tapped" />
                 <TextBlock x:Name="MenuAddFavorite" Text="add to favorites" Style="{StaticResource MenuItem}" Tapped="MenuAddFavorite_Tapped" />
-                <TextBlock x:Name="MenuFind" Text="find on page" Style="{StaticResource MenuItem}" Tapped="MenuFind_Tapped" />
                 <TextBlock x:Name="MenuShare" Text="share page" Style="{StaticResource MenuItem}" Tapped="MenuShare_Tapped" />
+                <TextBlock x:Name="MenuFind" Text="find on page" Style="{StaticResource MenuItem}" Tapped="MenuFind_Tapped" />
                 <TextBlock x:Name="MenuPin" Text="pin to start" Style="{StaticResource MenuItem}" Tapped="MenuPin_Tapped" />
-                <TextBlock Text="recent" Style="{StaticResource MenuItem}" Tapped="MenuRecent_Tapped" />
                 <TextBlock Text="settings" Style="{StaticResource MenuItem}" Tapped="MenuSettings_Tapped" />
             </StackPanel>
         </StackPanel>

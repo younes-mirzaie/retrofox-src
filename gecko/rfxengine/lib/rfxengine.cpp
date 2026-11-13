@@ -21,6 +21,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string>
+#include <algorithm>
+#include <cstdlib>
 #include <vector>
 
 #include "nsXULAppAPI.h"
@@ -48,6 +50,12 @@
 #include "nsIWidget.h"
 #include "nsServiceManagerUtils.h"
 #include "nsPresContext.h"
+#include "nsIFrame.h"
+#include "nsIContent.h"
+#include "StickyScrollContainer.h"
+#include "nsStyleStruct.h"
+#include "gfxContext.h"
+#include "mozilla/gfx/2D.h"
 #include "nsPrintfCString.h"
 #include "nsString.h"
 #include "nsTArray.h"
@@ -185,6 +193,11 @@ public:
   bool mRestore = false;
   // The page's scroll position and how far it can scroll, in physical pixels
   bool GetRootScroll(int32_t* aX, int32_t* aY, int32_t* aMaxX, int32_t* aMaxY);
+  // Draws a rectangle of the page (physical pixels from the page's top left, whatever is on
+  // screen) into aOut as BGRA rows; for the strips the app shows while panning
+  bool RenderStrip(int32_t aX, int32_t aY, int32_t aW, int32_t aH, std::vector<uint8_t>& aOut);
+  // The on-screen rectangles (x, y, w, h, physical pixels) of the page's position: fixed boxes
+  void GetFixedRects(std::vector<int32_t>& aOut);
 
 private:
   ~RfxBrowser() {}
@@ -334,6 +347,89 @@ RfxBrowser::GetRootScroll(int32_t* aX, int32_t* aY, int32_t* aMaxX, int32_t* aMa
   *aMaxX = presContext->AppUnitsToDevPixels(range.XMost());
   *aMaxY = presContext->AppUnitsToDevPixels(range.YMost());
   return true;
+}
+
+void
+RfxBrowser::GetFixedRects(std::vector<int32_t>& aOut)
+{
+  aOut.clear();
+  nsCOMPtr<nsIDocShell> docShell = do_GetInterface(mBrowser);
+  nsIPresShell* presShell = docShell ? docShell->GetPresShell() : nullptr;
+  nsPresContext* presContext = presShell ? presShell->GetPresContext() : nullptr;
+  nsIFrame* root = presShell ? presShell->GetRootFrame() : nullptr;   // the viewport frame
+  if (!presContext || !root) {
+    return;
+  }
+  nsIntRect view = root->GetRect().ToOutsidePixels(presContext->AppUnitsPerDevPixel());
+  int64_t viewArea = int64_t(view.width) * view.height;
+  auto add = [&](const nsRect& aRect) {
+    nsIntRect d = aRect.ToOutsidePixels(presContext->AppUnitsPerDevPixel());
+    // A box over half the screen isn't a header or a footer: a full-screen background or
+    // overlay. Holding it in place while panning would freeze the whole page, so leave it out.
+    if (d.width > 0 && d.height > 0 && int64_t(d.width) * d.height * 2 <= viewArea) {
+      aOut.push_back(d.x);
+      aOut.push_back(d.y);
+      aOut.push_back(d.width);
+      aOut.push_back(d.height);
+    }
+  };
+  for (nsIFrame* f : root->GetChildList(nsIFrame::kFixedList)) {
+    // Gecko's own hidden full-screen layer (for selection handles and the like) is fixed too
+    nsIContent* content = f->GetContent();
+    if (content && content->IsInNativeAnonymousSubtree()) {
+      continue;
+    }
+    if (f->StyleVisibility()->IsVisible()) {
+      add(f->GetVisualOverflowRect() + f->GetPosition());
+    }
+  }
+  // position: sticky boxes act like fixed ones while they're stuck (moved from where the page
+  // would put them): those too, where they are on screen
+  nsIFrame* scrollFrame = presShell->GetRootScrollFrame();
+  mozilla::StickyScrollContainer* sticky = scrollFrame ?
+    mozilla::StickyScrollContainer::GetStickyScrollContainerForScrollFrame(scrollFrame) : nullptr;
+  if (sticky) {
+    for (nsIFrame* f : sticky->Frames()) {
+      if (f->GetPosition() != f->GetNormalPosition() && f->StyleVisibility()->IsVisible()) {
+        add(f->GetVisualOverflowRect() + f->GetOffsetTo(root));
+      }
+    }
+  }
+}
+
+bool
+RfxBrowser::RenderStrip(int32_t aX, int32_t aY, int32_t aW, int32_t aH, std::vector<uint8_t>& aOut)
+{
+  using namespace mozilla::gfx;
+  nsCOMPtr<nsIDocShell> docShell = do_GetInterface(mBrowser);
+  nsIPresShell* presShell = docShell ? docShell->GetPresShell() : nullptr;
+  nsPresContext* presContext = presShell ? presShell->GetPresContext() : nullptr;
+  if (!presContext || aW <= 0 || aH <= 0) {
+    return false;
+  }
+  aOut.assign(size_t(aW) * aH * 4, 0xFF);
+  RefPtr<DrawTarget> dt = Factory::CreateDrawTargetForData(
+    BackendType::SKIA, aOut.data(), IntSize(aW, aH), aW * 4, SurfaceFormat::B8G8R8A8);
+  if (!dt) {
+    return false;
+  }
+  RefPtr<gfxContext> ctx = gfxContext::CreateOrNull(dt);
+  if (!ctx) {
+    return false;
+  }
+  // RenderDocument draws one CSS pixel per unit: scale up to physical pixels
+  double scale = double(nsPresContext::AppUnitsPerCSSPixel()) / presContext->AppUnitsPerDevPixel();
+  ctx->SetMatrix(gfxMatrix::Scaling(scale, scale));
+  nsRect rect(presContext->DevPixelsToAppUnits(aX), presContext->DevPixelsToAppUnits(aY),
+              presContext->DevPixelsToAppUnits(aW), presContext->DevPixelsToAppUnits(aH));
+  // The page as if not scrolled, so the rectangle is in page coordinates; images that aren't
+  // decoded yet are left for later rather than decoded now
+  uint32_t flags = nsIPresShell::RENDER_IGNORE_VIEWPORT_SCROLLING |
+                   nsIPresShell::RENDER_DOCUMENT_RELATIVE |
+                   nsIPresShell::RENDER_ASYNC_DECODE_IMAGES |
+                   nsIPresShell::RENDER_DRAWWINDOW_NOT_FLUSHING;
+  nsresult rv = presShell->RenderDocument(rect, flags, NS_RGB(255, 255, 255), ctx);
+  return NS_SUCCEEDED(rv);
 }
 
 void
@@ -801,6 +897,7 @@ public:
   }
   void OnPointer(uint8_t aAction, int aX, int aY) override
   {
+    mLastInput = PR_IntervalNow();
     RetrofoxPointerAction a = aAction == rfxview::kPointerDown ? eRetrofoxPointerDown :
                               aAction == rfxview::kPointerUp ? eRetrofoxPointerUp :
                               eRetrofoxPointerMove;
@@ -817,6 +914,7 @@ public:
 
   void OnScroll(int aDX, int aDY) override
   {
+    mLastInput = PR_IntervalNow();
     RetrofoxGesture g = GetRetrofoxGesture();
     if (g == eRetrofoxGesturePage) {
       DropHeldScroll();
@@ -833,6 +931,19 @@ public:
     aDX += mHeldDX;
     aDY += mHeldDY;
     mHeldDX = mHeldDY = 0;
+    // Every step the app sent since the last turn goes to Gecko as one scroll, before its
+    // events run (ApplyPendingScroll): one wheel event, one scroll event for the page's scripts
+    mPendingDX += aDX;
+    mPendingDY += aDY;
+  }
+  int32_t mPendingDX = 0, mPendingDY = 0;
+  void ApplyPendingScroll()
+  {
+    int32_t aDX = mPendingDX, aDY = mPendingDY;
+    mPendingDX = mPendingDY = 0;
+    if (!aDX && !aDY) {
+      return;
+    }
     int32_t x0, y0, x1, y1, maxX, maxY;
     bool before = mBrowser && mBrowser->GetRootScroll(&x0, &y0, &maxX, &maxY);
     DispatchRetrofoxScroll(aDX, aDY);
@@ -869,6 +980,8 @@ public:
 
   bool mStateResend = false;
   rfxview::ScrollInfo mScroll = rfxview::ScrollInfo();
+  // When the app last sent a scroll or a touch: strips are drawn only in the quiet after that
+  PRIntervalTime mLastInput = PR_IntervalNow();
 
   // A touch the page took (or one that ended undecided): its held scrolling never applies, but the
   // app counts it as handled
@@ -1249,9 +1362,12 @@ RetrofoxEngineMain(int argc, char** argv)
       port = uint16_t(atoi(argv[++i]));
     } else if (!strcmp(argv[i], "--home") && i + 1 < argc) {
       home = argv[++i];
+    } else if (!strcmp(argv[i], "--full-paint")) {
+      // Redraw the whole screen on every paint, as before 0.3.5 (to compare)
+      SetRetrofoxFullPaint(true);
     } else {
       printf("usage: rfxengine [--port N] [--home URL] [--gre DIR] [--profile DIR] [--log FILE]"
-             " [--in-app] | --shot URL out.bmp\n");
+             " [--in-app] [--full-paint] | --shot URL out.bmp\n");
       return 2;
     }
   }
@@ -1376,6 +1492,14 @@ RetrofoxEngineMain(int argc, char** argv)
               unsigned(eventsMs), unsigned(paintMs), unsigned(sendMs), unsigned(pollMs),
               s.scrolls, s.acks, s.acks ? unsigned(s.ackMs / s.acks) : 0, s.ackWaits);
         }
+        // Every widget paint, including those run inside Gecko's events (the refresh driver's)
+        uint32_t wPaints = 0, wShare = 0;
+        double wMs = 0;
+        TakeRetrofoxPaintStats(&wPaints, &wMs, &wShare);
+        if (paints || s.scrolls || wPaints) {
+          Log("  all paints: %u, %u ms in all (%u ms each), each redrew %u%% of the screen",
+              wPaints, unsigned(wMs), wPaints ? unsigned(wMs / wPaints) : 0, wShare);
+        }
         paints = frames = loops = 0;
         paintMs = eventsMs = sendMs = pollMs = 0;
         s = rfxview::Server::Stats();
@@ -1395,6 +1519,7 @@ RetrofoxEngineMain(int argc, char** argv)
       ++stats.loops;
       // Run Gecko for up to 16 ms, then paint and talk to the app
       double t0 = nowMs();
+      link.ApplyPendingScroll();
       NS_ProcessPendingEvents(thread, PR_MillisecondsToInterval(16));
       double t1 = nowMs();
       stats.eventsMs += t1 - t0;
@@ -1447,6 +1572,68 @@ RetrofoxEngineMain(int argc, char** argv)
       rfxview::ScrollInfo scroll = link.mScroll;
       if (active->GetRootScroll(&scroll.x, &scroll.y, &scroll.maxX, &scroll.maxY)) {
         server.SendScrollInfo(scroll);
+      }
+      {
+        static std::vector<int32_t> sFixed, sFixedLogged;
+        active->GetFixedRects(sFixed);
+        server.SendFixed(sFixed);
+        if (sFixed != sFixedLogged) {
+          sFixedLogged = sFixed;
+          std::string list;
+          for (size_t i = 0; i + 3 < sFixed.size(); i += 4) {
+            char item[64];
+            snprintf(item, sizeof(item), " %d,%d %dx%d", sFixed[i], sFixed[i + 1], sFixed[i + 2], sFixed[i + 3]);
+            list += item;
+          }
+          Log("fixed parts:%s", list.empty() ? " none" : list.c_str());
+        }
+      }
+      // Strips: the page just below and above the screen, drawn while nothing else is going on
+      // (no input for a moment, the app has every frame, the page has loaded), so the app has
+      // something to show at once when the finger moves the page (STRIP). One per loop.
+      {
+        static RfxBrowser* sStripPage = nullptr;
+        static int32_t sBelowY = -1, sAboveY = -1, sStripX = -1;
+        static uint32_t sStripSerial = 0;
+        static PRIntervalTime sStripTime = 0;
+        static std::vector<uint8_t> sStripPixels;
+        int32_t sx = 0, sy = 0, maxX = 0, maxY = 0;
+        int w = server.Width(), h = server.Height();
+        if (active != sStripPage) {
+          sStripPage = active;
+          sBelowY = sAboveY = sStripX = -1;
+        }
+        static const bool kStrips = true;
+        bool quiet = kStrips && PR_IntervalToMilliseconds(PR_IntervalNow() - link.mLastInput) > 250 &&
+                     !server.FramesInFlight() && !active->Loading() && haveFrame;
+        if (quiet && w > 0 && h > 0 && active->GetRootScroll(&sx, &sy, &maxX, &maxY)) {
+          // The page changed under the strips (something repainted without scrolling): draw
+          // them again, but not more often than every 2 s (animations)
+          if (haveFrame && frame.mSerial != sStripSerial &&
+              PR_IntervalToMilliseconds(PR_IntervalNow() - sStripTime) > 2000) {
+            sBelowY = sAboveY = -1;
+          }
+          if (sx != sStripX) {
+            sBelowY = sAboveY = -1;
+          }
+          int32_t belowY = sy + h, belowH = std::min<int32_t>(h, maxY - sy);
+          int32_t aboveY = std::max<int32_t>(0, sy - h / 2), aboveH = sy - aboveY;
+          bool belowStale = belowH > 0 && (sBelowY < 0 || std::abs(sBelowY - belowY) > h / 3);
+          bool aboveStale = aboveH > 0 && (sAboveY < 0 || std::abs(sAboveY - aboveY) > h / 3);
+          if (belowStale || aboveStale) {
+            int32_t y = belowStale ? belowY : aboveY, sh = belowStale ? belowH : aboveH;
+            PRIntervalTime t0 = PR_IntervalNow();
+            if (active->RenderStrip(sx, y, w, sh, sStripPixels)) {
+              server.SendStrip(sx, y, w, sh, sStripPixels.data());
+              Log("strip %s: %d px at %d, %u ms", belowStale ? "below" : "above", sh, y,
+                  PR_IntervalToMilliseconds(PR_IntervalNow() - t0));
+            }
+            (belowStale ? sBelowY : sAboveY) = y;
+            sStripX = sx;
+            sStripSerial = haveFrame ? frame.mSerial : 0;
+            sStripTime = PR_IntervalNow();
+          }
+        }
       }
       stats.Report(server);
       // Each tab's title and address go in TABS; the tab on screen's whole state in STATE

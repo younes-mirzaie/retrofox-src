@@ -337,6 +337,38 @@ void Server::SendGesture(uint8_t gesture)
         SendMsg(kGesture, &gesture, 1);
 }
 
+void Server::SendStrip(int32_t pageX, int32_t pageY, int width, int height, const uint8_t* bgra)
+{
+    if (!Connected() || width <= 0 || height <= 0)
+        return;
+    size_t px = size_t(width) * height * 4;
+    std::vector<uint8_t> m(8 + 12 + px);
+    wr16(m.data(), kStrip);
+    wr16(m.data() + 2, 0);
+    wr32(m.data() + 4, uint32_t(12 + px));
+    uint8_t* f = m.data() + 8;
+    wr32(f, uint32_t(pageX));
+    wr32(f + 4, uint32_t(pageY));
+    wr16(f + 8, uint16_t(width));
+    wr16(f + 10, uint16_t(height));
+    memcpy(f + 12, bgra, px);
+    SendAll(m.data(), m.size());
+}
+
+void Server::SendFixed(const std::vector<int32_t>& rects)
+{
+    if (!Connected() || (mFixedSentOnce && rects == mFixedSent))
+        return;
+    mFixedSent = rects;
+    mFixedSentOnce = true;
+    size_t n = rects.size() / 4;
+    std::vector<uint8_t> p(4 + n * 8);
+    wr32(p.data(), mDirty ? mSerial + 1 : mSerial);     // the frame these belong to
+    for (size_t i = 0; i < n * 4; i++)
+        wr16(p.data() + 4 + i * 2, uint16_t(int16_t(rects[i])));
+    SendMsg(kFixed, p.data(), p.size());
+}
+
 void Server::SendTabs(const std::string& json)
 {
     if (Connected())

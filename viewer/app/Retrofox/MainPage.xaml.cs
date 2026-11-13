@@ -143,12 +143,16 @@ namespace Retrofox
             // Which engine: the one inside the app (port 8091) once it is starting, or the separate
             // one (8081)
             await InAppEngine.Decided;
-            ShowStatus(_engineWasUp ? RestartingText : "Connecting to the Retrofox engine...");
+            // The engine inside the app starts with it: nothing to say while it does (the page
+            // shows as soon as it is ready). The separate engine is a developer setup.
+            if (!InAppEngine.Running)
+                ShowStatus(_engineWasUp ? RestartingText : "Connecting to the Retrofox engine...");
             var engine = new EngineConnection();
             engine.FrameReceived += Engine_FrameReceived;
             engine.ScrollReceived += Engine_ScrollReceived;
             engine.TabsReceived += json => RunOnUi(() => ApplyTabs(json));
             engine.GestureReceived += g => RunOnUi(() => ApplyGesture(g));
+            HookStrips(engine);
             lock (_pixelLock)
             {
                 _sentX = _sentY = 0;
@@ -206,6 +210,21 @@ namespace Retrofox
             else
             {
                 engine.Dispose();
+                if (InAppEngine.Running)
+                {
+                    // The engine inside the app is still starting (a cold start can take a few
+                    // seconds); say something only if it takes unusually long
+                    if (++_failedConnects >= MaxFailedConnects)
+                    {
+                        ShowStatus("Retrofox couldn't start its browser engine.\n\nClose Retrofox and open it again.",
+                                   "try again", RetryConnecting);
+                        return;
+                    }
+                    if (_failedConnects >= 5)
+                        ShowStatus("Retrofox is still starting...");
+                    _retryTimer.Start();
+                    return;
+                }
                 if (++_failedConnects >= MaxFailedConnects)
                 {
                     // Stop here rather than retry forever; the button starts over
@@ -509,6 +528,7 @@ namespace Retrofox
             }
             CountBlit(StatNow() - blitStart);
             TakeScrollInfo();
+            UpdateFixedLayer();
             if (serial != 0 && _engine != null)
             {
                 var t = _engine.SendFrameAck(serial);
@@ -584,6 +604,8 @@ namespace Retrofox
             }
             PageShift.X = -dx / _scale;
             PageShift.Y = -dy / _scale;
+            PlaceStrips(s, dx, dy);
+            UpdateFixedVisibility();
         }
 
         // ---- Page state ----
@@ -593,7 +615,10 @@ namespace Retrofox
             JsonObject o;
             if (!JsonObject.TryParse(json, out o))
                 return;
-            _pageUrl = o.GetNamedString("url", "");
+            string url = o.GetNamedString("url", "");
+            if (url != _pageUrl)
+                ClearStrips();      // another page: its strips and fixed parts don't apply
+            _pageUrl = url;
             if (_pageUrl.Length > 0 && _pageUrl != "about:blank")
                 _lastUrl = _pageUrl;
             _pageTitle = o.GetNamedString("title", "");

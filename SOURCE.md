@@ -9,7 +9,7 @@ MPL 2.0 (see `LICENSE`) unless a file says otherwise.
 ## What's here
 
 - `patches/`: every change Retrofox makes to UXP, as patch files against the UXP release branch
-  (commit `UXP_COMMIT`, from https://repo.palemoon.org/MoonchildProductions/UXP).
+  (commit `6b18be917d462369593bfe611230a7003fd7d945`, from https://repo.palemoon.org/MoonchildProductions/UXP).
 - `gecko/`: Retrofox's own engine code (XPTCall for Windows on ARM, the engine host).
 - `viewer/app/`: the Windows Phone 8.1 app (C# and XAML).
 - `desktop/`: the Windows PC version.

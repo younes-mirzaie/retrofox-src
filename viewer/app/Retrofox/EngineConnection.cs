@@ -20,6 +20,21 @@ namespace Retrofox
     }
 
     // Where the page is scrolled in a frame (PROTOCOL.md, SCROLL); physical pixels
+    // A strip of the page outside the screen, drawn ahead of time (STRIP): its place in the page
+    // (physical pixels from the page's top left) and its BGRA pixels
+    public sealed class StripMessage
+    {
+        public int PageX, PageY, Width, Height;
+        public byte[] Pixels;
+    }
+
+    // The page's position: fixed boxes on screen in the frame Serial (x, y, w, h quads)
+    public sealed class FixedMessage
+    {
+        public uint Serial;
+        public int[] Rects;
+    }
+
     public sealed class ScrollInfo
     {
         public uint Serial;              // the frame that shows this
@@ -34,7 +49,7 @@ namespace Retrofox
         public const ushort Version = 1;
 
         // Message types
-        const ushort Welcome = 1, Frame = 2, State = 3, Focus = 4, Scroll_ = 5, Tabs = 6, Gesture = 7;
+        const ushort Welcome = 1, Frame = 2, State = 3, Focus = 4, Scroll_ = 5, Tabs = 6, Gesture = 7, Strip = 8, Fixed = 9;
         const ushort Hello = 100, Navigate = 101, Command = 102, Pointer = 103,
                      Scroll = 104, Key = 105, Text = 106, Resize = 107, FrameAck = 108, Log = 109, Tab = 110;
         const uint MaxPayload = 16 * 1024 * 1024;
@@ -58,6 +73,8 @@ namespace Retrofox
         public event Action<string> TabsReceived;
         // Who handles the touch drag: GestureNone, GestureUndecided, GestureBrowser, GesturePage
         public event Action<byte> GestureReceived;
+        public event Action<StripMessage> StripReceived;
+        public event Action<FixedMessage> FixedReceived;
         public const byte GestureNone = 0, GestureUndecided = 1, GestureBrowser = 2, GesturePage = 3;
         public event Action Disconnected;
 
@@ -178,6 +195,30 @@ namespace Retrofox
                 case Gesture:
                     var gh = GestureReceived;
                     if (gh != null && p.Length >= 1) gh(p[0]);
+                    break;
+                case Strip:
+                    var sr = StripReceived;
+                    if (sr == null || p.Length < 12) return;
+                    var st = new StripMessage
+                    {
+                        PageX = (int)Get32(p, 0),
+                        PageY = (int)Get32(p, 4),
+                        Width = Get16(p, 8),
+                        Height = Get16(p, 10),
+                    };
+                    if (p.Length < 12 + st.Width * st.Height * 4) return;
+                    st.Pixels = new byte[st.Width * st.Height * 4];
+                    System.Buffer.BlockCopy(p, 12, st.Pixels, 0, st.Pixels.Length);
+                    sr(st);
+                    break;
+                case Fixed:
+                    var fx = FixedReceived;
+                    if (fx == null || p.Length < 4) return;
+                    int n = (p.Length - 4) / 8;
+                    var rects = new int[n * 4];
+                    for (int i = 0; i < n * 4; i++)
+                        rects[i] = (short)Get16(p, 4 + i * 2);
+                    fx(new FixedMessage { Serial = Get32(p, 0), Rects = rects });
                     break;
                 case Tabs:
                     var th = TabsReceived;

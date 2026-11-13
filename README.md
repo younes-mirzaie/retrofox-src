@@ -17,7 +17,7 @@ retrofox is an independent community project. It is not affiliated with or endor
 - `scripts/` – fetch a pinned Mozilla source release, apply patches, build
 - `patches/` – our changes to Mozilla code, as `.patch` files
 - `phone/` – helpers to copy binaries to the phone and run them over CMD
-- (development notes are kept separately)
+- `notes/` – findings: missing APIs, test results, benchmarks
 
 Mozilla's source is downloaded into `mozilla/` and build output goes to `build/`; both are git-ignored.
 

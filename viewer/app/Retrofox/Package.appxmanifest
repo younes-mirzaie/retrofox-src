@@ -1,6 +1,6 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Package xmlns="http://schemas.microsoft.com/appx/2010/manifest" xmlns:m2="http://schemas.microsoft.com/appx/2013/manifest" xmlns:m3="http://schemas.microsoft.com/appx/2014/manifest" xmlns:mp="http://schemas.microsoft.com/appx/2014/phone/manifest">
-  <Identity Name="Retrofox.Browser" Publisher="CN=Younes" Version="0.3.2.0" />
+  <Identity Name="Retrofox.Browser" Publisher="CN=Younes" Version="0.3.5.0" />
   <mp:PhoneIdentity PhoneProductId="6f06e8ec-8324-431b-88ec-9542c6c8c48c" PhonePublisherId="00000000-0000-0000-0000-000000000000" />
   <Properties>
     <DisplayName>Retrofox</DisplayName>
@@ -16,9 +16,9 @@
   </Resources>
   <Applications>
     <Application Id="App" Executable="$targetnametoken$.exe" EntryPoint="Retrofox.App">
-      <m3:VisualElements DisplayName="Retrofox" Square150x150Logo="Assets\Logo.png" Square44x44Logo="Assets\SmallLogo.png" Description="Gecko browser for Windows Phone 8.1" ForegroundText="light" BackgroundColor="#E86A17">
-        <m3:DefaultTile Wide310x150Logo="Assets\WideLogo.png" Square71x71Logo="Assets\Square71x71Logo.png" ShortName="Retrofox" />
-        <m3:SplashScreen Image="Assets\SplashScreen.png" BackgroundColor="#141414" />
+      <m3:VisualElements DisplayName="Retrofox" Square150x150Logo="Assets\Logo.png" Square44x44Logo="Assets\SmallLogo.png" Description="Gecko browser for Windows Phone 8.1" ForegroundText="light" BackgroundColor="#F39450">
+        <m3:DefaultTile Square71x71Logo="Assets\Square71x71Logo.png" ShortName="Retrofox" />
+        <m3:SplashScreen Image="Assets\SplashScreen.png" BackgroundColor="#F39450" />
       </m3:VisualElements>
     </Application>
   </Applications>

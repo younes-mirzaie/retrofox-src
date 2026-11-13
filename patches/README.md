@@ -159,3 +159,21 @@ asserts that the async shutdown service exists: it is written in JS on top of OS
 needs js-ctypes, and neither the phone nor the desktop build has ctypes, so a page that created
 an audio or video element crashed the engine (whatismybrowser.com); media then just skips its
 shutdown blockers, since the engine ends by exiting.
+
+## uxp-sticky-frames.patch
+
+StickyScrollContainer gets a read-only `Frames()` accessor, so the engine can find the page's
+position: sticky boxes that are currently stuck and report them to the app (FIXED) together with
+the position: fixed ones; the app holds them in place while it pans the picture.
+
+## uxp-partial-paint.patch
+
+The phone widget (`widget/retrofox`) redraws only what Gecko invalidated, clipped to that
+rectangle, instead of the whole window on every paint; its surface keeps the last frame, so the
+rest is already there. Layout runs for every window first (`WillPaintTree`), so what that
+invalidates is part of the same paint. `SetRetrofoxFullPaint(true)` (rfxengine `--full-paint`)
+redraws everything, as before, to compare. `TakeRetrofoxPaintStats` reports how many paints ran,
+their total time and the share of the screen they redrew (the engine logs it every 5 s). Apply it
+last, on top of the others:
+
+    git -C mozilla/uxp apply --ignore-whitespace ../../patches/uxp-partial-paint.patch

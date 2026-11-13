@@ -1,0 +1,192 @@
+diff --git a/widget/retrofox/RetrofoxFrame.h b/widget/retrofox/RetrofoxFrame.h
+index 5ba3ef5..a6e16f6 100644
+--- a/widget/retrofox/RetrofoxFrame.h
++++ b/widget/retrofox/RetrofoxFrame.h
+@@ -32,6 +32,13 @@ bool GetRetrofoxFrame(RetrofoxFrame* aOut);
+ // Paints the top-level window now if it's dirty (main thread). Returns true if it painted.
+ bool PaintRetrofoxFrameNow();
+ 
++// retrofox: what painting cost since the last call (every paint, whoever asked for it):
++// how many, the total ms, and the share of the window's pixels the paints asked for (in %)
++// retrofox: true paints the whole window every time (the old way, to compare); default false
++void SetRetrofoxFullPaint(bool aFull);
++
++void TakeRetrofoxPaintStats(uint32_t* aCount, double* aMs, uint32_t* aDirtyPercent);
++
+ // Input from the phone app, in device pixels of the top-level window (main thread). Each goes to
+ // the innermost visible child window under the point (the page's content widget).
+ enum RetrofoxPointerAction { eRetrofoxPointerDown, eRetrofoxPointerMove, eRetrofoxPointerUp };
+diff --git a/widget/retrofox/nsWindow.cpp b/widget/retrofox/nsWindow.cpp
+index 909b788..032bfe6 100644
+--- a/widget/retrofox/nsWindow.cpp
++++ b/widget/retrofox/nsWindow.cpp
+@@ -14,6 +14,7 @@
+ #include "nsIDOMWheelEvent.h"
+ #include "prinrval.h"
+ #include "mozilla/gfx/2D.h"
++#include <windows.h>
+ #include "mozilla/layers/LayersTypes.h"
+ #include "nsIWidgetListener.h"
+ #include "nsScreenManager.h"
+@@ -237,6 +238,39 @@ nsWindow::ScheduleTopLevelPaint()
+   }));
+ }
+ 
++// retrofox: paint only the invalidated rectangle (SetRetrofoxFullPaint(true) paints everything
++// every time, as before, to compare)
++static bool sFullPaint = false;
++
++void
++mozilla::widget::SetRetrofoxFullPaint(bool aFull)
++{
++  sFullPaint = aFull;
++}
++
++static uint32_t sPaintCount = 0;
++static double sPaintMs = 0;
++static double sPaintDirtyShare = 0;
++
++static double
++PaintClockMs()
++{
++  LARGE_INTEGER t, f;
++  QueryPerformanceCounter(&t);
++  QueryPerformanceFrequency(&f);
++  return double(t.QuadPart) * 1000.0 / double(f.QuadPart);
++}
++
++void
++mozilla::widget::TakeRetrofoxPaintStats(uint32_t* aCount, double* aMs, uint32_t* aDirtyPercent)
++{
++  *aCount = sPaintCount;
++  *aMs = sPaintMs;
++  *aDirtyPercent = sPaintCount ? uint32_t(sPaintDirtyShare * 100 / sPaintCount) : 0;
++  sPaintCount = 0;
++  sPaintMs = sPaintDirtyShare = 0;
++}
++
+ bool
+ nsWindow::PaintIfDirty()
+ {
+@@ -244,6 +278,7 @@ nsWindow::PaintIfDirty()
+     return false;
+   }
+   mDirty = false;
++  double paintStart = PaintClockMs();
+ 
+   IntSize size(mBounds.width, mBounds.height);
+   bool newTarget = false;
+@@ -255,22 +290,35 @@ nsWindow::PaintIfDirty()
+     newTarget = true;
+   }
+ 
++  // Layout first (WillPaintWindow flushes it), since that can invalidate more; then the
++  // rectangle to draw is known. What gets invalidated while painting waits for the next paint.
++  WillPaintTree();
++  LayoutDeviceIntRect all(0, 0, mBounds.width, mBounds.height);
++  LayoutDeviceIntRect dirty = newTarget || sFullPaint ? all : mPendingDirty.Intersect(all);
++  mPendingDirty.SetEmpty();
++  mDirty = false;
++
+   // With an embedded browser the top-level window has no listener of its own: the page is
+   // drawn by child windows (the content view's widget). Paint every visible window in the tree
+-  // into the one surface, parents first.
++  // into the one surface, parents first. The surface keeps the last frame, so only the dirty
++  // rectangle needs drawing.
+   bool painted = false;
+-  PaintTree(mFrame, LayoutDeviceIntPoint(0, 0), &painted);
+-  mFrame->Flush();
++  if (!dirty.IsEmpty()) {
++    PaintTree(mFrame, LayoutDeviceIntPoint(0, 0), dirty, &painted);
++    mFrame->Flush();
++  }
+ 
+-  LayoutDeviceIntRect all(0, 0, mBounds.width, mBounds.height);
+-  mLastPaintDirty = newTarget ? all : mPendingDirty.Intersect(all);
+-  mPendingDirty.SetEmpty();
++  mLastPaintDirty = dirty;
+   ++mFrameSerial;
++  ++sPaintCount;
++  sPaintMs += PaintClockMs() - paintStart;
++  sPaintDirtyShare += double(mLastPaintDirty.width) * mLastPaintDirty.height /
++                      (double(all.width) * all.height);
+   return painted;
+ }
+ 
+ void
+-nsWindow::PaintTree(DrawTarget* aTarget, const LayoutDeviceIntPoint& aOffset, bool* aPainted)
++nsWindow::WillPaintTree()
+ {
+   if (!mVisible) {
+     return;
+@@ -278,12 +326,34 @@ nsWindow::PaintTree(DrawTarget* aTarget, const LayoutDeviceIntPoint& aOffset, bo
+   if (mWidgetListener) {
+     mWidgetListener->WillPaintWindow(this);
+   }
+-  if (mWidgetListener) {
++  nsTArray<RefPtr<nsWindow>> children;
++  for (uint32_t i = 0; i < mChildren.Length(); ++i) {
++    children.AppendElement(mChildren[i]);
++  }
++  for (uint32_t i = 0; i < children.Length(); ++i) {
++    children[i]->WillPaintTree();
++  }
++}
++
++void
++nsWindow::PaintTree(DrawTarget* aTarget, const LayoutDeviceIntPoint& aOffset,
++                    const LayoutDeviceIntRect& aDirty, bool* aPainted)
++{
++  if (!mVisible) {
++    return;
++  }
++  // The dirty rectangle in this window's coordinates, inside the window
++  LayoutDeviceIntRect local = (aDirty - aOffset).Intersect(
++    LayoutDeviceIntRect(0, 0, mBounds.width, mBounds.height));
++  if (mWidgetListener && !local.IsEmpty()) {
+     RefPtr<gfxContext> ctx = gfxContext::CreateOrNull(aTarget);
+     if (ctx) {
+       ctx->SetMatrix(gfxMatrix::Translation(aOffset.x, aOffset.y));
++      ctx->NewPath();
++      ctx->Rectangle(gfxRect(local.x, local.y, local.width, local.height));
++      ctx->Clip();
+       AutoLayerManagerSetup setup(this, ctx, BufferMode::BUFFER_NONE);
+-      LayoutDeviceIntRegion region(LayoutDeviceIntRect(0, 0, mBounds.width, mBounds.height));
++      LayoutDeviceIntRegion region(local);
+       if (mWidgetListener->PaintWindow(this, region)) {
+         *aPainted = true;
+       }
+@@ -299,7 +369,8 @@ nsWindow::PaintTree(DrawTarget* aTarget, const LayoutDeviceIntPoint& aOffset, bo
+   }
+   for (uint32_t i = 0; i < children.Length(); ++i) {
+     nsWindow* c = children[i];
+-    c->PaintTree(aTarget, aOffset + LayoutDeviceIntPoint(c->mBounds.x, c->mBounds.y), aPainted);
++    c->PaintTree(aTarget, aOffset + LayoutDeviceIntPoint(c->mBounds.x, c->mBounds.y), aDirty,
++                 aPainted);
+   }
+ }
+ 
+diff --git a/widget/retrofox/nsWindow.h b/widget/retrofox/nsWindow.h
+index 1b5846c..e35044d 100644
+--- a/widget/retrofox/nsWindow.h
++++ b/widget/retrofox/nsWindow.h
+@@ -45,7 +45,7 @@ public:
+   NS_IMETHOD Resize(double aX, double aY, double aWidth, double aHeight, bool aRepaint) override;
+   virtual LayoutDeviceIntRect GetScreenBounds() override;
+ 
+-  virtual float GetDPI() override { return 217.0f; }  // Lumia: 4.3", 480x800
++  virtual float GetDPI() override { return 217.0f; }  // Lumia 820: 4.3", 480x800
+   virtual double GetDefaultScaleInternal() override;
+   // navigator.maxTouchPoints: the Lumia's screen takes several fingers
+   virtual uint32_t GetMaxTouchPoints() const override { return 5; }
+@@ -93,8 +93,9 @@ protected:
+   void ReportMoveEvent();
+   void ReportSizeEvent();
+   void ReportSizeModeEvent(nsSizeMode aMode);
++  void WillPaintTree();
+   void PaintTree(mozilla::gfx::DrawTarget* aTarget, const LayoutDeviceIntPoint& aOffset,
+-                 bool* aPainted);
++                 const LayoutDeviceIntRect& aDirty, bool* aPainted);
+ 
+   bool mVisible;
+   bool mDirty;

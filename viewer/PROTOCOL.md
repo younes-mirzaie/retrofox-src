@@ -49,6 +49,8 @@ HELLO is always first. width/height are the surface size in physical pixels.
 | 5 | SCROLL | where the page is scrolled, see below |
 | 7 | GESTURE | u8: who handles the touch drag in progress: 0 no touch, 1 not decided yet, 2 the browser scrolls, 3 the page handles it (it cancelled the touch, or CSS touch-action rules out panning that way): the app stops moving the picture and its SCROLLs are ignored until the finger lifts |
 | 6 | TABS | UTF-8 JSON: `{"active":2,"tabs":[{"id":1,"title":"...","url":"..."},{"id":2,...}]}`, whenever a tab opens, closes, switches or changes its title or address |
+| 8 | STRIP | i32 x, i32 y (the strip's place in the page, physical pixels from the page's top left), u16 width, u16 height, then width*height BGRA pixels. The page just below (about a screen) and above (half a screen) what's on screen, drawn while the engine is idle, so the app can show page instead of blank while it pans ahead of the next frame |
+| 9 | FIXED | u32 serial of the frame they belong to, then for each of the page's position: fixed boxes and stuck position: sticky boxes: i16 x, i16 y, i16 w, i16 h on screen (surface pixels). Sent when it changes. While the app moves the picture, it shows copies of these from the last frame in place, so headers and bars don't move with the page and snap back |
 
 ### FRAME
 | offset | size | field |

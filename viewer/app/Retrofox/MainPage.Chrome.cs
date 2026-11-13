@@ -638,7 +638,10 @@ namespace Retrofox
                 return;
             uint active = (uint)o.GetNamedNumber("active", 0);
             if (active != _activeTab)
+            {
                 TakeThumbnail(_activeTab);    // the tab being left, as it looked
+                ClearStrips();                // its strips and fixed parts were for that tab
+            }
             _activeTab = active;
             _tabs.Clear();
             foreach (var v in o.GetNamedArray("tabs", new JsonArray()))
